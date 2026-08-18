@@ -87,8 +87,9 @@ first.` Never let a bare traceback reach the client.
 
 ## Landmines verified against the installed versions
 
-These were checked by running them; several contradict the build brief and the
-stale reference implementation.
+These were each checked by running them against the installed libraries. Several
+contradict what the documentation implies, so trust this list over a plausible-
+looking snippet.
 
 - **The MCP SDK is `mcp` 2.0.** `mcp.server.fastmcp.FastMCP` does not exist. Use
   `MCPServer` from `mcp.server`. `ToolAnnotations` fields are **snake_case**
@@ -122,11 +123,3 @@ stale reference implementation.
   `Sundial` and gains pandas 2.2+.
 - TimeCopilot publishes **no per-model extras** — every model ships in the base
   install. Only `distributed` exists to mirror.
-
-## Repo notes
-
-- `timecopilot_mcp.py` at the root is the original single-file reference. It is
-  superseded and **does not run** against the installed versions (dead `FastMCP`
-  import, the `cutoff` aggregation bug). Read it for behavioural intent only.
-- `timecopilot-mcp-brief.md` is the build brief, corrected in place after
-  verification; §13 and §15 record what reality disagreed with.
