@@ -1,0 +1,128 @@
+# Public repo: standard runners are free and unmetered, so this tests the whole
+# supported Python range on every push rather than rationing jobs.
+#
+# The one cost that still matters is wall-clock: TimeCopilot pulls ~2 GB of
+# dependencies, and every job pays that install. Hence the shape here — lint
+# runs with no project install at all, and the checks that only make sense once
+# (mypy, packaging, the integration suite) are pinned to a single matrix leg
+# instead of repeating four times.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "LICENSE", ".gitignore"]
+  pull_request:
+    paths-ignore: ["**.md", "LICENSE", ".gitignore"]
+  workflow_dispatch:
+
+# Supersede in-flight runs on the same ref: pushing three times in a row should
+# cost one run, not three.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # No `uv sync`: ruff needs none of the project's dependencies, so this
+      # finishes in seconds instead of installing 2 GB to run a linter.
+      - name: Ruff
+        run: uvx ruff check src tests
+
+  test:
+    name: test (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      # Skip the ~2 GB of nvidia-* CUDA wheels the default torch build pulls on
+      # Linux. Nothing here runs on a GPU.
+      UV_TORCH_BACKEND: cpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      # --frozen on every version: uv's lockfile is universal, so it already
+      # encodes the different resolution the older interpreters get (below 3.13
+      # TimeCopilot pins tabpfn-time-series, which caps pandas under 2.2). That
+      # is why the lock holds 367 packages where a 3.13 venv has 291.
+      - name: Install
+        run: uv sync --all-groups --frozen
+
+      - name: Test
+        run: uv run pytest
+
+      # Everything below is version-independent, so it runs once rather than
+      # four times.
+      - name: Restore mypy cache
+        if: matrix.python-version == '3.13'
+        uses: actions/cache@v4
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/**/*.py') }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
+            mypy-${{ runner.os }}-
+
+      - name: Type check
+        if: matrix.python-version == '3.13'
+        run: uv run mypy
+
+      - name: Integration tests (TimeCopilot, no weight downloads)
+        if: matrix.python-version == '3.13'
+        run: uv run pytest -m slow
+
+      - name: Build
+        if: matrix.python-version == '3.13'
+        run: uv build
+
+      - name: Check wheel contents
+        if: matrix.python-version == '3.13'
+        run: |
+          uv run python - <<'PY'
+          import pathlib, zipfile
+          whl = next(pathlib.Path("dist").glob("*.whl"))
+          archive = zipfile.ZipFile(whl)
+          names = set(archive.namelist())
+          required = {
+              "tslab_mcp/__init__.py", "tslab_mcp/server.py",
+              "tslab_mcp/report.py", "tslab_mcp/py.typed",
+          }
+          missing = required - names
+          assert not missing, f"missing from wheel: {sorted(missing)}"
+          entry = next(n for n in names if n.endswith("entry_points.txt"))
+          assert "tslab-mcp" in archive.read(entry).decode()
+          print(f"{whl.name}: {len(names)} files, entry point present")
+          PY
+
+      # The packaging check that actually catches breakage: install the built
+      # wheel into a clean environment and drive the server as a client would.
+      - name: Installed wheel serves its tools
+        if: matrix.python-version == '3.13'
+        run: |
+          uv run --isolated --no-project -p 3.13 --with dist/*.whl -- python - <<'PY'
+          import asyncio
+          from tslab_mcp.server import mcp
+          tools = asyncio.run(mcp.list_tools())
+          assert len(tools) == 8, [t.name for t in tools]
+          assert all(t.description and t.annotations for t in tools)
+          assert {t.name for t in tools if not t.annotations.read_only_hint} == {
+              "tsf_export_run", "tsf_export_report"
+          }
+          print("tools:", ", ".join(sorted(t.name for t in tools)))
+          PY
