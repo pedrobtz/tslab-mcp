@@ -76,7 +76,7 @@ uvx twine check dist/*       # validates metadata + README rendering
 GitHub but breaks PyPI's stricter Markdown parser, leaving a project page of raw
 text.
 
-Inspect what you are actually shipping — the wheel should contain the ten
+Inspect what you are actually shipping — the wheel should contain the eleven
 modules plus `py.typed`, and nothing else:
 
 ```bash
@@ -184,7 +184,7 @@ uvx --refresh tslab-mcp --help 2>/dev/null || true
 npx @modelcontextprotocol/inspector uvx tslab-mcp
 ```
 
-The Inspector should list seven `tsf_*` tools with populated schemas. Expect the
+The Inspector should list eight `tsf_*` tools with populated schemas. Expect the
 first run to take several minutes and roughly 2.3 GB of downloads — that is
 TimeCopilot's dependency tree, not a hung install. Worth confirming the README
 sets that expectation before people meet it unprepared.

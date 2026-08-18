@@ -16,13 +16,14 @@ import typing
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tslab_mcp import artifacts, registry
 from tslab_mcp.schemas import (
     CrossValidateInput,
     DescribeSeriesInput,
     DetectAnomaliesInput,
+    ExportReportInput,
     ExportRunInput,
     ForecastInput,
     ListModelsInput,
@@ -34,6 +35,7 @@ from tslab_mcp.server import (
     tsf_cross_validate,
     tsf_describe_series,
     tsf_detect_anomalies,
+    tsf_export_report,
     tsf_export_run,
     tsf_forecast,
     tsf_list_models,
@@ -48,6 +50,7 @@ TOOL_FUNCTIONS = [
     tsf_forecast,
     tsf_detect_anomalies,
     tsf_export_run,
+    tsf_export_report,
 ]
 
 EXPECTED_TOOL_NAMES = {
@@ -58,6 +61,7 @@ EXPECTED_TOOL_NAMES = {
     "tsf_forecast",
     "tsf_detect_anomalies",
     "tsf_export_run",
+    "tsf_export_report",
 }
 
 
@@ -66,7 +70,7 @@ EXPECTED_TOOL_NAMES = {
 # --------------------------------------------------------------------------
 
 
-async def test_all_seven_tools_are_registered():
+async def test_all_tools_are_registered():
     names = {tool.name for tool in await mcp.list_tools()}
     assert names == EXPECTED_TOOL_NAMES
 
@@ -90,7 +94,7 @@ async def test_only_export_run_is_declared_writing():
         for tool in await mcp.list_tools()
         if tool.annotations and tool.annotations.read_only_hint is False
     }
-    assert writing == {"tsf_export_run"}
+    assert writing == {"tsf_export_run", "tsf_export_report"}
 
 
 async def test_every_tool_exposes_a_pydantic_schema():
@@ -337,3 +341,84 @@ async def test_manifest_captures_the_whole_session(loaded):
     for run in manifest["runs"]:
         assert Path(run["artifact"]).exists()
         assert run["at"].endswith("+00:00")
+
+
+# --------------------------------------------------------------------------
+# features reach the manifest, and the report renders every step
+# --------------------------------------------------------------------------
+
+
+async def test_describe_records_features_in_the_run_log(loaded):
+    """The features are the evidence behind the model choice, so the manifest
+    must carry them rather than leaving them in the transcript."""
+    await tsf_describe_series(DescribeSeriesInput(handle="clean"))
+    runs = registry.get("clean").runs
+    assert [run["kind"] for run in runs] == ["features"]
+    assert runs[0]["seasonal_period"] == 12
+    assert runs[0]["features"][0]["n"] == 72
+
+
+async def test_describe_features_survive_into_the_manifest(loaded):
+    await tsf_describe_series(DescribeSeriesInput(handle="clean"))
+    payload = json.loads(await tsf_export_run(ExportRunInput(handle="clean")))
+    manifest = json.loads(Path(payload["manifest"]).read_text())
+    assert manifest["runs"][0]["kind"] == "features"
+    assert manifest["runs"][0]["features"]
+
+
+async def test_report_from_handle_writes_html(loaded):
+    await tsf_describe_series(DescribeSeriesInput(handle="clean"))
+    payload = json.loads(
+        await tsf_export_report(
+            ExportReportInput(handle="clean", note="baseline only")
+        )
+    )
+    path = Path(payload["report"])
+    assert path.suffix == ".html"
+    assert path.exists()
+    assert payload["steps"] == ["features"]
+
+    html = path.read_text()
+    assert html.startswith("<!doctype html>")
+    assert "baseline only" in html
+    assert loaded.sha256 in html
+
+
+async def test_report_markdown_format(loaded):
+    payload = json.loads(
+        await tsf_export_report(
+            ExportReportInput(handle="clean", format="markdown")
+        )
+    )
+    path = Path(payload["report"])
+    assert path.suffix == ".md"
+    assert path.read_text().startswith("# Forecasting report")
+
+
+async def test_report_can_rerender_an_exported_manifest(loaded):
+    """The offline path: a manifest alone is enough, with no handle loaded."""
+    await tsf_describe_series(DescribeSeriesInput(handle="clean"))
+    exported = json.loads(
+        await tsf_export_run(ExportRunInput(handle="clean", note="for the record"))
+    )
+    registry.clear()
+
+    payload = json.loads(
+        await tsf_export_report(ExportReportInput(manifest_path=exported["manifest"]))
+    )
+    assert Path(payload["report"]).exists()
+    assert "for the record" in Path(payload["report"]).read_text()
+
+
+async def test_report_rejects_a_missing_manifest(tmp_path):
+    with pytest.raises(ValueError, match="No such manifest"):
+        await tsf_export_report(
+            ExportReportInput(manifest_path=str(tmp_path / "absent.json"))
+        )
+
+
+async def test_report_requires_exactly_one_source():
+    with pytest.raises(ValidationError):
+        ExportReportInput()
+    with pytest.raises(ValidationError):
+        ExportReportInput(handle="clean", manifest_path="/tmp/m.json")

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ResponseFormat(str, Enum):
@@ -27,6 +27,13 @@ class ModelFamily(str, Enum):
     ALL = "all"
     STATISTICAL = "statistical"
     FOUNDATION = "foundation"
+
+
+class ReportFormat(str, Enum):
+    """Output format for an exported report."""
+
+    HTML = "html"
+    MARKDOWN = "markdown"
 
 
 class Metric(str, Enum):
@@ -306,3 +313,47 @@ class ExportRunInput(_Base):
         ),
         max_length=4000,
     )
+
+
+class ExportReportInput(_Base):
+    handle: str | None = Field(
+        default=None,
+        description=(
+            "Handle to report on, e.g. 'deposits'. Builds the report from this "
+            "session's run log. Pass this or manifest_path, not both."
+        ),
+        min_length=1,
+    )
+    manifest_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to a manifest written earlier by tsf_export_run. Re-renders "
+            "that run offline, without needing its handle to still be loaded."
+        ),
+        min_length=1,
+    )
+    format: ReportFormat = Field(
+        default=ReportFormat.HTML,
+        description=(
+            "'html' for a self-contained page to open or send; 'markdown' to "
+            "paste into a PR, issue, or wiki."
+        ),
+    )
+    note: str | None = Field(
+        default=None,
+        description=(
+            "Rationale to headline the report. Ignored when reporting from a "
+            "manifest_path, which carries the note it was written with."
+        ),
+        max_length=4000,
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> ExportReportInput:
+        if bool(self.handle) == bool(self.manifest_path):
+            raise ValueError(
+                "Pass exactly one of handle or manifest_path: handle to report "
+                "on the current session, manifest_path to re-render a manifest "
+                "written earlier."
+            )
+        return self

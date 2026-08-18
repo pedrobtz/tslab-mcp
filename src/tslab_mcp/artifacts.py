@@ -63,6 +63,13 @@ def write_json(payload: Any, prefix: str, handle: str) -> Path:
     return path
 
 
+def write_text(content: str, prefix: str, handle: str, suffix: str) -> Path:
+    """Write ``content`` to a fresh file with ``suffix`` and return its path."""
+    path = _unique_path(prefix, handle, suffix)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def sha256_file(path: Path) -> str:
     """Stream a file through SHA-256 without loading it into memory."""
     digest = hashlib.sha256()

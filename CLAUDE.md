@@ -56,10 +56,16 @@ throwaway scripts: put TimeCopilot imports inside `main()`, or the script will
 appear to hang.
 
 **The manifest is the artifact of record.** Every tool that computes appends a
-`manifest.record(...)` entry to `SeriesHandle.runs`; `tsf_export_run` pins those
-to the input SHA-256 and installed package versions. If a decision exists only
-in conversation prose, the design has failed — put it in the run record or the
-`note` field.
+`manifest.record(...)` entry to `SeriesHandle.runs` — including
+`tsf_describe_series`, whose features are the evidence behind the model choice.
+`tsf_export_run` pins those to the input SHA-256 and installed package versions.
+If a decision exists only in conversation prose, the design has failed — put it
+in the run record or the `note` field.
+
+`report.py` renders a manifest to HTML or Markdown and is a **pure function of
+the manifest**: it reads no parquet, calls no model, and touches no registry.
+Keep it that way — that property is what lets a report regenerate offline years
+later. Both renderers share one extraction layer so their content cannot drift.
 
 ### Module boundaries
 

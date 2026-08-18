@@ -11,6 +11,7 @@ sibling modules; if a tool body grows past ~30 lines, it belongs somewhere else.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -18,15 +19,26 @@ import pandas as pd
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from . import __version__, artifacts, evaluation, features, manifest, models, registry
+from . import (
+    __version__,
+    artifacts,
+    evaluation,
+    features,
+    manifest,
+    models,
+    registry,
+    report,
+)
 from .schemas import (
     CrossValidateInput,
     DescribeSeriesInput,
     DetectAnomaliesInput,
+    ExportReportInput,
     ExportRunInput,
     ForecastInput,
     ListModelsInput,
     LoadSeriesInput,
+    ReportFormat,
     ResponseFormat,
 )
 
@@ -131,6 +143,20 @@ async def tsf_describe_series(params: DescribeSeriesInput) -> str:
             "n_omitted": omitted,
             "features": shown,
         }
+
+        # Features are the evidence behind the model-family decision, so they
+        # belong in the run log rather than only in the conversation.
+        entry = manifest.record(
+            "features",
+            seasonal_period=period,
+            n_series=len(rows),
+            shown=len(shown),
+            truncated=omitted > 0,
+            n_omitted=omitted,
+            features=shown,
+        )
+        series.runs.append(entry)
+
         if params.response_format is ResponseFormat.JSON:
             return _dumps(payload)
         return _markdown_features(payload)
@@ -401,6 +427,64 @@ async def tsf_export_run(params: ExportRunInput) -> str:
                 "n_runs": len(series.runs),
                 "kinds": sorted({str(run["kind"]) for run in series.runs}),
                 "environment": payload["environment"],
+            }
+        )
+
+    return await anyio.to_thread.run_sync(_run)
+
+
+@mcp.tool(
+    name="tsf_export_report",
+    annotations=ToolAnnotations(
+        title="Export a readable report of the whole run",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=False,
+    ),
+)
+async def tsf_export_report(params: ExportReportInput) -> str:
+    """Render every step of the analysis as a report someone can read.
+
+    Covers the input and its hash, the features, each cross-validation with its
+    metric table and ranking, the forecasts, any anomaly runs, and the pinned
+    environment -- in the order they happened. HTML is self-contained, with no
+    external stylesheet or script, so it opens correctly years later.
+
+    Call it after tsf_export_run at the end of an analysis. Pass a note: the
+    report headlines it as the rationale, and a table of numbers without the
+    reasoning is what makes a reviewer ask for the whole thing again.
+
+    Report from `manifest_path` instead of `handle` to re-render an older run --
+    it needs nothing but the manifest file.
+    """
+
+    def _run() -> str:
+        if params.manifest_path is not None:
+            path = Path(params.manifest_path).expanduser()
+            if not path.exists():
+                raise ValueError(
+                    f"No such manifest: {path}. Pass the path returned by "
+                    "tsf_export_run, or use handle to report on this session."
+                )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            source = str(payload.get("input", {}).get("source", "manifest"))
+            stem = Path(source).stem or "manifest"
+        else:
+            series = registry.get(str(params.handle))
+            payload = manifest.build(series, params.note)
+            stem = series.handle
+
+        suffix = ".html" if params.format is ReportFormat.HTML else ".md"
+        content = report.render(payload, params.format.value)
+        written = artifacts.write_text(content, "report", stem, suffix)
+        return _dumps(
+            {
+                "report": str(written),
+                "format": params.format.value,
+                "n_steps": len(payload.get("runs", [])),
+                "steps": [str(run.get("kind")) for run in payload.get("runs", [])],
+                "bytes": len(content.encode("utf-8")),
             }
         )
 

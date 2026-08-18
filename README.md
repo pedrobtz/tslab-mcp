@@ -106,10 +106,10 @@ From a checkout, point it at the working tree instead:
 ```
 
 Then: open Chat, switch the mode selector to **Agent**, and use the **Tools**
-button to confirm the seven `tsf_*` tools are listed and enabled. `MCP: List
+button to confirm the eight `tsf_*` tools are listed and enabled. `MCP: List
 Servers` shows the server's status and its logs, which is where a failed start
 is explained. Copilot caps how many tools can be active at once, so if you run
-several MCP servers you may need to deselect some to fit all seven.
+several MCP servers you may need to deselect some to fit all eight.
 
 **Visual Studio.** Same JSON shape, in `.mcp.json` at the solution root (or
 `%USERPROFILE%\.mcp.json` for all solutions), then enable the tools from the
@@ -135,13 +135,14 @@ choose **Edit MCP configuration**, and add the same `servers` entry to the
 | `tsf_forecast` | Fit and forecast with prediction intervals | Parquet path + bounded preview |
 | `tsf_detect_anomalies` | Cross-validated interval flagging | Counts, capped flag list, parquet path |
 | `tsf_export_run` | Pin the session to a re-runnable manifest | Manifest path |
+| `tsf_export_report` | Render every step as a readable report | HTML or Markdown path |
 
-Everything except `tsf_export_run` is marked read-only; nothing here deletes, so
-cleaning up `~/.tslab-mcp/runs` is your business, not the agent's.
+Everything except the two `tsf_export_*` tools is marked read-only; nothing here
+deletes, so cleaning up `~/.tslab-mcp/runs` is your business, not the agent's.
 
 ## Starting a session
 
-The tools do not enforce an order, so the opening prompt is what turns seven
+The tools do not enforce an order, so the opening prompt is what turns eight
 callable functions into an analysis. Something like this works well:
 
 > Use the tslab tools to forecast the series in
@@ -156,8 +157,9 @@ callable functions into an analysis. Something like this works well:
 > 4. Cross-validate your shortlist against a SeasonalNaive baseline over 4
 >    windows. Statistical models only for now.
 > 5. Forecast with the winner, with 80% and 95% intervals.
-> 6. Export a run manifest, and put the model-selection rationale in the note:
->    what you chose, what the metric table showed, and what you rejected.
+> 6. Export a run manifest and an HTML report, and put the model-selection
+>    rationale in the note: what you chose, what the metric table showed, and
+>    what you rejected.
 >
 > Summarise results and give me the parquet paths — don't paste whole frames
 > into the chat.
@@ -239,8 +241,8 @@ model that cannot beat it is not worth deploying:
 **5. Forecast** with the winner. The full frame goes to parquet; the response
 carries the path, the columns, and a short preview.
 
-**6. Export the run.** Write down *why*, in the note — it is the only part of
-your reasoning that outlives the conversation:
+**6. Export the run and the report.** Write down *why*, in the note — it is the
+only part of your reasoning that outlives the conversation:
 
 ```json
 {"manifest": "~/.tslab-mcp/runs/manifest_deposits_77b0e415.json", "n_runs": 3,
@@ -251,6 +253,21 @@ The manifest holds the source path and hash, the frequency, every call with its
 arguments and artifact paths, the pinned versions of TimeCopilot, statsforecast,
 pandas, torch and Python, and your note. It is sufficient to reproduce the
 numbers with the server stopped.
+
+`tsf_export_report` turns that same manifest into something a person reads —
+features, metric tables ordered best-first, forecasts, anomalies and the
+environment, in the order they happened:
+
+```json
+{"report": "~/.tslab-mcp/runs/report_deposits_5c31d0a7.html",
+ "format": "html", "n_steps": 3,
+ "steps": ["features", "cross_validation", "forecast"]}
+```
+
+The report is a *pure function of the manifest*: it reads no parquet and calls
+no model, so `tsf_export_report` with `manifest_path` re-renders a run from
+months ago with nothing loaded. The HTML embeds its own CSS and references no
+external script, stylesheet or font, so it still opens correctly offline.
 
 ## Design
 
