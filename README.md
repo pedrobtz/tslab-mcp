@@ -139,6 +139,56 @@ choose **Edit MCP configuration**, and add the same `servers` entry to the
 Everything except `tsf_export_run` is marked read-only; nothing here deletes, so
 cleaning up `~/.tslab-mcp/runs` is your business, not the agent's.
 
+## Starting a session
+
+The tools do not enforce an order, so the opening prompt is what turns seven
+callable functions into an analysis. Something like this works well:
+
+> Use the tslab tools to forecast the series in
+> `/Users/me/data/deposits.csv`, 12 months ahead.
+>
+> Work in this order and show your reasoning at each step:
+>
+> 1. Load the file and tell me what you found — how many series, what frequency,
+>    any gaps or missing values.
+> 2. Describe the features, and say which model families they argue for, and why.
+> 3. Check which models are actually installed before proposing any.
+> 4. Cross-validate your shortlist against a SeasonalNaive baseline over 4
+>    windows. Statistical models only for now.
+> 5. Forecast with the winner, with 80% and 95% intervals.
+> 6. Export a run manifest, and put the model-selection rationale in the note:
+>    what you chose, what the metric table showed, and what you rejected.
+>
+> Summarise results and give me the parquet paths — don't paste whole frames
+> into the chat.
+
+Four things in that prompt are doing real work:
+
+- **An absolute path.** Relative paths resolve against the *server's* working
+  directory, which your MCP client chooses and you generally cannot predict.
+- **A horizon that matches the decision.** `h` drives both the forecast and how
+  much history each CV window consumes; 12 monthly steps is a year of planning,
+  not an arbitrary default.
+- **"Statistical models only for now."** Without it, an agent may reach for a
+  foundation model and spend several minutes downloading weights to answer a
+  question `AutoETS` would have settled in seconds. Lift the restriction once
+  the cheap models have set a floor.
+- **Asking for the rationale in the manifest note.** The chat transcript is
+  disposable; the manifest is the part someone can rerun and audit. If the
+  reasoning only exists in the conversation, it is effectively lost.
+
+Shorter openers, when you know what you want:
+
+> Load `/Users/me/data/sales.parquet` and describe the features. Don't forecast
+> yet — I want to see what we're dealing with first.
+
+> Compare SeasonalNaive, AutoETS and AutoARIMA on the loaded `deposits` handle,
+> over 6 windows at h=12, then tell me whether anything beats the baseline by
+> enough to be worth the extra complexity.
+
+The first call that touches a model spends ~30 seconds importing TimeCopilot, so
+an early pause is expected rather than a hang.
+
 ## A worked session
 
 Start from a CSV in Nixtla long format:
