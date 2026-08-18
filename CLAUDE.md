@@ -24,11 +24,20 @@ npx @modelcontextprotocol/inspector uv run tslab-mcp
 
 ## What this is
 
-An MCP server wrapping `TimeCopilotForecaster` — the *deterministic* half of
-TimeCopilot. The session driving the tools is the reasoning engine; this package
-computes numbers and never calls an LLM. Nothing under `src/tslab_mcp/` may
-import `pydantic_ai`, `openai`, or `anthropic` (they are present in the
-dependency tree only because TimeCopilot depends on them unconditionally).
+An MCP server exposing deterministic time-series forecasting. The session
+driving the tools is the reasoning engine; this package computes numbers and
+never calls an LLM.
+
+Two backends, chosen automatically in `backends.select()`:
+
+- **statsforecast** (core, always installed) runs the eleven statistical models.
+  ~340 MB, no torch.
+- **TimeCopilot** (optional `foundation` extra) runs the pretrained models and
+  Prophet. ~2 GB, and only reached when a request names one of its models.
+
+A request whose models are all statistical never touches TimeCopilot. A mixed
+request goes entirely to TimeCopilot, which carries the statistical models too —
+letting it merge the frames avoids reimplementing an upstream join.
 
 ## Architecture
 
@@ -48,12 +57,13 @@ minutes; a blocked loop means the stdio transport stops answering and the client
 drops the server mid-run.
 
 **TimeCopilot is imported lazily, always.** `import timecopilot` costs ~34
-seconds. All imports of it live inside `models.py` function bodies. This is not
-only about startup: TimeCopilot runs statsforecast with `n_jobs=-1` outside a
-daemon process, and the spawned workers re-import the entry module — a
-module-scope import would be paid *per worker, per call*. The same trap bites
-throwaway scripts: put TimeCopilot imports inside `main()`, or the script will
-appear to hang.
+seconds, and it is now optional, so a module-scope import would break the base
+install outright. All imports of it live inside function bodies in `backends.py`
+and `models.py`. The same trap bites throwaway scripts: put TimeCopilot imports
+inside `main()`, or the script will appear to hang — TimeCopilot runs
+statsforecast with `n_jobs=-1`, and its spawned workers re-import the entry
+module. Our own statsforecast backend leaves `n_jobs` at its default of 1 to
+avoid that entirely.
 
 **The manifest is the artifact of record.** Every tool that computes appends a
 `manifest.record(...)` entry to `SeriesHandle.runs` — including
@@ -81,9 +91,16 @@ a tool body passes ~30 lines, the logic belongs in a sibling module.
 - `evaluation.py`, `registry.py` — must degrade rather than fail. A ten-minute
   CV run is never lost to an upstream signature change; failures return a
   fallback table plus `degraded_reason`.
-- `models.py` — `MODEL_REGISTRY` maps friendly names to import paths. `probe()`
-  records the exception **message**, not just its type: several models fail with
+- `models.py` — the registry, split into `STATS_MODELS` (statsforecast, always
+  available) and `TIMECOPILOT_MODELS` (needs the extra). `probe()` records the
+  exception **message**, not just its type: several models fail with
   `"requires Python < 3.13"`, and the message is the actionable part.
+- `backends.py` — both engines behind one protocol. They must return identical
+  frame shapes, because the tool layer, run records and reports all depend on
+  it; `detect_anomalies` is reimplemented for statsforecast and must keep
+  emitting `{alias}-anomaly`.
+- `seasonality.py` — the shared seasonal period. Do not route it through
+  gluonts or TimeCopilot; the base install has neither.
 
 ### Errors are prompts for the agent's next action
 
@@ -107,11 +124,12 @@ looking snippet.
   `test_cutoff_column_is_not_averaged`.
 - **Anomaly flags are per-model columns named `"{alias}-anomaly"`**, not a
   single `anomaly` column. Locate by suffix.
-- **Seasonality is deliberately computed two ways.** `features.py` uses its own
-  table (`D → 7`) for the descriptive seasonal-strength feature;
-  `evaluation.py` prefers TimeCopilot's `get_seasonality` (M4 convention,
-  `D → 1`) for MASE, and only when `timecopilot` is already in `sys.modules`, so
-  a lookup never triggers the 34s import. The response states which was used.
+- **Seasonality is deliberately computed two ways.** `seasonality.py`
+  reimplements the gluonts/M4 convention (`D → 1`, `W → 1`) and is used for both
+  a model's `season_length` and MASE, so the two backends agree and no install
+  needs gluonts. `features.py` keeps a richer table (`D → 7`, `W → 52`) for the
+  descriptive seasonal-strength feature only. Verified to match gluonts exactly
+  across 20 aliases; changing it silently changes every seasonal forecast.
 - **stdout needs no protection.** The SDK's stdio transport already serves the
   wire from a private CLOEXEC duplicate of fd 1 and points fd 1 at stderr, so
   stray prints from the forecasting stack and its worker processes cannot
@@ -127,5 +145,7 @@ looking snippet.
   both alias generations (`M` and `ME`, `H` and `h`).
 - Python 3.13 is the dev target (`.python-version`): it loses only `TabPFN` and
   `Sundial` and gains pandas 2.2+.
-- TimeCopilot publishes **no per-model extras** — every model ships in the base
-  install. Only `distributed` exists to mirror.
+- TimeCopilot publishes **no per-model extras** — every model ships in its base
+  install, which is why it is all-or-nothing behind our `foundation` extra.
+- The core depends on `statsforecast` and `utilsforecast` only; adding anything
+  that pulls torch to the core defeats the point of the split.

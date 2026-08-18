@@ -30,16 +30,27 @@ uvx tslab-mcp                     # run without installing
 uv tool install tslab-mcp         # or install the CLI
 ```
 
+The base install runs the eleven statistical models through
+[statsforecast](https://github.com/Nixtla/statsforecast): roughly 340 MB, no
+PyTorch, and it starts instantly. For the pretrained foundation models — Chronos,
+Moirai, TimesFM, Toto, TiRex — and Prophet, add the extra:
+
+```bash
+uvx --from 'tslab-mcp[foundation]' tslab-mcp
+```
+
+> The `foundation` extra pulls TimeCopilot, which brings torch, transformers and
+> lightning: roughly 2 GB on first install, and the first tool call that touches
+> it spends ~30 seconds importing. Both are one-off, and neither is paid unless
+> you ask for a model that needs them.
+
 From a checkout:
 
 ```bash
-uv sync
+uv sync                              # base
+uv sync --extra foundation           # with the pretrained models
 uv run tslab-mcp
 ```
-
-> TimeCopilot pulls in torch, transformers, lightning, prophet and friends — the
-> first install downloads roughly 2 GB and the first tool call that touches
-> TimeCopilot spends ~30 seconds importing it. Both are one-off.
 
 ## Configure
 
@@ -286,17 +297,18 @@ dispatched through `anyio.to_thread.run_sync`, so the stdio transport keeps
 answering and the client does not drop the server mid-run.
 
 **The environment is discovered, not assumed.** Models are imported lazily and
-probed, never assumed present. This is also why the server starts instantly
-despite a 30-second dependency: nothing imports TimeCopilot until a tool needs
-it. (It matters more than it looks — statsforecast parallelises across worker
-processes that re-import the entry module, so an eager import would be paid once
-per worker, per call.)
+probed, never assumed present. `tsf_list_models` reports what actually resolved
+here, so asking for `Chronos` without the extra returns a message naming the
+extra rather than a traceback ten minutes into a run.
 
-Expect the first tool call that touches TimeCopilot to spend ~30 seconds
-importing it, and the first cross-validation in a fresh process to pay numba's
-JIT compilation on top. Both are one-off per server process; later calls are
-much faster. `tsf_load_series` and `tsf_describe_series` skip TimeCopilot
-entirely and always return immediately.
+The backend is chosen by what you ask for: a request whose models are all
+statistical runs through statsforecast, and only a request that needs a
+pretrained model reaches for TimeCopilot. Statistical runs therefore never
+import torch, and the server starts instantly either way.
+
+statsforecast is left at its default `n_jobs=1` deliberately. Its parallel mode
+spawns worker processes that re-import the entry module, which inside an MCP
+server buys contention and a stdout hazard rather than speed.
 
 **The manifest is the artifact of record.** Prose in the conversation is
 commentary. The manifest is what someone reruns in six months, and what a

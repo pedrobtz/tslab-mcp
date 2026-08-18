@@ -1,11 +1,11 @@
 # Public repo: standard runners are free and unmetered, so this tests the whole
 # supported Python range on every push rather than rationing jobs.
 #
-# The one cost that still matters is wall-clock: TimeCopilot pulls ~2 GB of
-# dependencies, and every job pays that install. Hence the shape here — lint
-# runs with no project install at all, and the checks that only make sense once
-# (mypy, packaging, the integration suite) are pinned to a single matrix leg
-# instead of repeating four times.
+# The base install is statsforecast-only and light, so the matrix is cheap. The
+# expensive part is the optional `foundation` extra (TimeCopilot and PyTorch,
+# ~2 GB), which is installed on one leg only, after that leg has already proved
+# the light install works. Checks that are version-independent — mypy,
+# packaging, the integration suite — likewise run once rather than four times.
 name: CI
 
 on:
@@ -46,8 +46,9 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     env:
       UV_PYTHON: ${{ matrix.python-version }}
-      # Skip the ~2 GB of nvidia-* CUDA wheels the default torch build pulls on
-      # Linux. Nothing here runs on a GPU.
+      # Only bites once the foundation extra is installed, but harmless before
+      # that: skips the ~2 GB of nvidia-* CUDA wheels the default torch build
+      # pulls on Linux. Nothing here runs on a GPU.
       UV_TORCH_BACKEND: cpu
     steps:
       - uses: actions/checkout@v4
@@ -57,11 +58,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      # --frozen on every version: uv's lockfile is universal, so it already
-      # encodes the different resolution the older interpreters get (below 3.13
-      # TimeCopilot pins tabpfn-time-series, which caps pandas under 2.2). That
-      # is why the lock holds 367 packages where a 3.13 venv has 291.
-      - name: Install
+      # No extras: this is the base install a plain `pip install tslab-mcp`
+      # gets, and the suite must pass on it. --frozen works on every version
+      # because uv's lockfile is universal.
+      - name: Install (base, no foundation extra)
         run: uv sync --all-groups --frozen
 
       - name: Test
@@ -82,6 +82,13 @@ jobs:
       - name: Type check
         if: matrix.python-version == '3.13'
         run: uv run mypy
+
+      # The base install has no TimeCopilot, so the foundation path needs the
+      # extra installed explicitly. Testing both shapes is the point: the
+      # matrix above proves the light install works, this proves the extra does.
+      - name: Install the foundation extra
+        if: matrix.python-version == '3.13'
+        run: uv sync --all-groups --extra foundation --frozen
 
       - name: Integration tests (TimeCopilot, no weight downloads)
         if: matrix.python-version == '3.13'

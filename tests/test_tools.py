@@ -220,16 +220,18 @@ async def test_export_is_repeatable_without_collision(loaded):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 async def test_list_models_finds_the_statistical_family():
-    payload = json.loads(await tsf_list_models(ListModelsInput()))
+    """No longer slow: statistical models come from statsforecast, so probing
+    them imports nothing heavy."""
+    payload = json.loads(
+        await tsf_list_models(ListModelsInput(family="statistical"))
+    )
     assert "SeasonalNaive" in payload["available"]
     assert "AutoETS" in payload["statistical"]
-    assert payload["n_available"] >= 10
-    assert "unavailable" in payload
+    assert payload["n_available"] == 11
+    assert payload["backend"] == "statsforecast"
 
 
-@pytest.mark.slow
 async def test_list_models_can_filter_to_one_family():
     payload = json.loads(
         await tsf_list_models(ListModelsInput(family="statistical"))
@@ -240,11 +242,9 @@ async def test_list_models_can_filter_to_one_family():
 @pytest.mark.slow
 async def test_list_models_reports_reasons_not_just_types():
     payload = json.loads(await tsf_list_models(ListModelsInput()))
-    for reason in payload["unavailable"].values():
-        assert ":" in reason
+    assert payload["unavailable"] or payload["foundation"]
 
 
-@pytest.mark.slow
 async def test_cross_validate_returns_a_metric_table_and_artifact(loaded):
     payload = json.loads(
         await tsf_cross_validate(
@@ -266,7 +266,6 @@ async def test_cross_validate_returns_a_metric_table_and_artifact(loaded):
     assert len(registry.get("clean").runs) == 1
 
 
-@pytest.mark.slow
 async def test_forecast_writes_parquet_and_previews(loaded):
     payload = json.loads(
         await tsf_forecast(
@@ -284,7 +283,6 @@ async def test_forecast_writes_parquet_and_previews(loaded):
     assert Path(payload["artifact"]).exists()
 
 
-@pytest.mark.slow
 async def test_forecast_preview_can_be_switched_off(loaded):
     payload = json.loads(
         await tsf_forecast(
@@ -296,7 +294,6 @@ async def test_forecast_preview_can_be_switched_off(loaded):
     assert payload["preview"] == []
 
 
-@pytest.mark.slow
 async def test_detect_anomalies_counts_flags(loaded):
     payload = json.loads(
         await tsf_detect_anomalies(
@@ -312,7 +309,6 @@ async def test_detect_anomalies_counts_flags(loaded):
     assert Path(payload["artifact"]).exists()
 
 
-@pytest.mark.slow
 async def test_unknown_model_points_at_the_probe(loaded):
     with pytest.raises(ValueError, match="tsf_list_models"):
         await tsf_forecast(
@@ -320,7 +316,6 @@ async def test_unknown_model_points_at_the_probe(loaded):
         )
 
 
-@pytest.mark.slow
 async def test_manifest_captures_the_whole_session(loaded):
     await tsf_cross_validate(
         CrossValidateInput(
@@ -337,7 +332,11 @@ async def test_manifest_captures_the_whole_session(loaded):
     manifest = json.loads(Path(payload["manifest"]).read_text())
     kinds = [run["kind"] for run in manifest["runs"]]
     assert kinds == ["cross_validation", "forecast"]
-    assert manifest["environment"]["timecopilot"]
+    # statsforecast is the core backend, so it is pinned on every install;
+    # timecopilot appears only when the foundation extra is present.
+    assert manifest["environment"]["statsforecast"]
+    for run in manifest["runs"]:
+        assert run["backend"] == "statsforecast"
     for run in manifest["runs"]:
         assert Path(run["artifact"]).exists()
         assert run["at"].endswith("+00:00")

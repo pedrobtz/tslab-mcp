@@ -76,7 +76,7 @@ uvx twine check dist/*       # validates metadata + README rendering
 GitHub but breaks PyPI's stricter Markdown parser, leaving a project page of raw
 text.
 
-Inspect what you are actually shipping — the wheel should contain the eleven
+Inspect what you are actually shipping — the wheel should contain the thirteen
 modules plus `py.typed`, and nothing else:
 
 ```bash

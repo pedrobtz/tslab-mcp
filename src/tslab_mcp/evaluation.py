@@ -8,13 +8,12 @@ mean-absolute-error computed directly from the frame, with the reason attached.
 
 from __future__ import annotations
 
-import sys
 from functools import partial
 from typing import Any
 
 import pandas as pd
 
-from .features import seasonal_period
+from .seasonality import model_seasonality
 
 #: Columns ``evaluate`` adds or carries through that are not model predictions.
 _NON_MODEL_COLUMNS = frozenset({"unique_id", "ds", "cutoff", "metric", "y"})
@@ -23,24 +22,10 @@ _NON_MODEL_COLUMNS = frozenset({"unique_id", "ds", "cutoff", "metric", "y"})
 def evaluation_seasonality(freq: str) -> int:
     """Seasonality used for MASE.
 
-    Prefers TimeCopilot's own ``get_seasonality`` so the number matches what the
-    library reports elsewhere (it follows the gluonts/M4 convention, where daily
-    data is non-seasonal). Falls back to this package's richer table otherwise.
-
-    The preference is conditional on TimeCopilot already being imported: it is,
-    whenever a real cross-validation produced the frame, and paying a ~30 second
-    import just to look up an integer would be absurd anywhere else.
+    Delegates to the single shared implementation so the metric matches the
+    ``season_length`` the models were actually fitted with, on any install.
     """
-    if "timecopilot" not in sys.modules:
-        return seasonal_period(freq)
-    try:
-        from timecopilot.models.utils.forecaster import get_seasonality
-    except Exception:  # noqa: BLE001 -- fall back rather than fail the run
-        return seasonal_period(freq)
-    try:
-        return int(get_seasonality(freq))
-    except Exception:  # noqa: BLE001 -- unknown alias
-        return seasonal_period(freq)
+    return model_seasonality(freq)
 
 
 def _metric_functions(

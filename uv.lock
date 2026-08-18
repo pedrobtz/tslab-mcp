@@ -8597,12 +8597,16 @@ dependencies = [
     { name = "pyarrow", version = "23.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "pydantic" },
-    { name = "timecopilot" },
+    { name = "statsforecast" },
+    { name = "utilsforecast" },
 ]
 
 [package.optional-dependencies]
 distributed = [
     { name = "timecopilot", extra = ["distributed"] },
+]
+foundation = [
+    { name = "timecopilot" },
 ]
 
 [package.dev-dependencies]
@@ -8622,10 +8626,12 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.1.2" },
     { name = "pyarrow", specifier = ">=15.0.0" },
     { name = "pydantic", specifier = ">=2.7" },
-    { name = "timecopilot", specifier = ">=0.0.30" },
+    { name = "statsforecast", specifier = ">=2.0.2" },
+    { name = "timecopilot", marker = "extra == 'foundation'", specifier = ">=0.0.30" },
     { name = "timecopilot", extras = ["distributed"], marker = "extra == 'distributed'", specifier = ">=0.0.30" },
+    { name = "utilsforecast", specifier = ">=0.2.15" },
 ]
-provides-extras = ["distributed"]
+provides-extras = ["foundation", "distributed"]
 
 [package.metadata.requires-dev]
 dev = [

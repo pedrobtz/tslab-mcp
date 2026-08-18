@@ -22,6 +22,7 @@ from mcp.types import ToolAnnotations
 from . import (
     __version__,
     artifacts,
+    backends,
     evaluation,
     features,
     manifest,
@@ -243,8 +244,9 @@ async def tsf_cross_validate(params: CrossValidateInput) -> str:
         names = list(params.models)
         metric_names = [metric.value for metric in params.metrics]
 
-        forecaster = models.forecaster(names)
-        cv_df = forecaster.cross_validation(
+        models.validate_names(names)
+        backend = backends.select(names)
+        cv_df = backend.cross_validation(
             df=series.df,
             h=params.h,
             freq=series.freq,
@@ -259,6 +261,7 @@ async def tsf_cross_validate(params: CrossValidateInput) -> str:
         entry = manifest.record(
             "cross_validation",
             models=names,
+            backend=backend.name,
             h=params.h,
             n_windows=params.n_windows,
             step_size=params.step_size,
@@ -290,12 +293,10 @@ async def tsf_forecast(params: ForecastInput) -> str:
         series = registry.get(params.handle)
         names = list(params.models)
 
-        forecaster = models.forecaster(names)
-        forecast_df = forecaster.forecast(
-            df=series.df,
-            h=params.h,
-            freq=series.freq,
-            level=params.level or None,
+        models.validate_names(names)
+        backend = backends.select(names)
+        forecast_df = backend.forecast(
+            df=series.df, h=params.h, freq=series.freq, level=params.level
         )
         path = artifacts.write_parquet(forecast_df, "fcst", series.handle)
 
@@ -306,6 +307,7 @@ async def tsf_forecast(params: ForecastInput) -> str:
         entry = manifest.record(
             "forecast",
             models=names,
+            backend=backend.name,
             h=params.h,
             level=params.level,
             artifact=str(path),
@@ -345,8 +347,9 @@ async def tsf_detect_anomalies(params: DetectAnomaliesInput) -> str:
     def _run() -> str:
         series = registry.get(params.handle)
 
-        forecaster = models.forecaster([params.model])
-        result = forecaster.detect_anomalies(
+        models.validate_names([params.model])
+        backend = backends.select([params.model])
+        result = backend.detect_anomalies(
             df=series.df,
             h=params.h,
             freq=series.freq,
@@ -376,6 +379,7 @@ async def tsf_detect_anomalies(params: DetectAnomaliesInput) -> str:
         entry = manifest.record(
             "anomalies",
             model=params.model,
+            backend=backend.name,
             h=params.h,
             n_windows=params.n_windows,
             level=params.level,

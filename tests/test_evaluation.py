@@ -104,10 +104,18 @@ def test_unsupported_metric_degrades_rather_than_raising(cv_frame, train):
     assert "mae" in result["metrics"]
 
 
-def test_seasonality_falls_back_without_timecopilot_imported(monkeypatch):
+def test_seasonality_does_not_depend_on_timecopilot_being_imported(monkeypatch):
+    """MASE seasonality follows one shared convention on every install.
+
+    It used to differ depending on whether TimeCopilot happened to be imported,
+    which meant the same panel could score differently in two environments.
+    """
     monkeypatch.delitem(__import__("sys").modules, "timecopilot", raising=False)
     assert evaluation.evaluation_seasonality("MS") == 12
-    assert evaluation.evaluation_seasonality("D") == 7
+    # The gluonts/M4 convention: daily and weekly data are non-seasonal. This is
+    # deliberately not features.seasonal_period, which says 7 and 52.
+    assert evaluation.evaluation_seasonality("D") == 1
+    assert evaluation.evaluation_seasonality("W-MON") == 1
 
 
 def test_nan_scores_are_dropped_from_the_table(train, rng):

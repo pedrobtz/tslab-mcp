@@ -1,10 +1,13 @@
-"""The model registry: friendly name -> import path, resolved lazily.
+"""The model registry, split by what each model costs to install.
 
-Design invariant I3: the environment is discovered, not assumed. Importing
-``timecopilot`` costs tens of seconds and pulls in torch, so nothing here is
-imported at module load. :func:`probe` reports what actually resolved on *this*
-machine; :func:`resolve` turns a failure into a message naming the alternatives
-that work right now.
+Design invariant I3: the environment is discovered, not assumed. The statistical
+models come from statsforecast and are always present. Everything else needs the
+``foundation`` extra, which pulls TimeCopilot and ~2 GB of torch — so nothing
+here imports it until a tool actually asks for one of its models.
+
+:func:`probe` reports what resolved on *this* machine, which is how an agent
+learns in one turn that ``Chronos`` is unavailable rather than discovering it in
+a traceback ten minutes into a run.
 """
 
 from __future__ import annotations
@@ -12,23 +15,26 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-#: Friendly name -> (module path, attribute). Verified against timecopilot
-#: 0.0.30; ``probe`` exists precisely so drift fails softly.
-MODEL_REGISTRY: dict[str, tuple[str, str]] = {
-    # statistical -- cheap, no weights, always available
-    "SeasonalNaive": ("timecopilot.models.stats", "SeasonalNaive"),
-    "HistoricAverage": ("timecopilot.models.stats", "HistoricAverage"),
-    "AutoARIMA": ("timecopilot.models.stats", "AutoARIMA"),
-    "AutoETS": ("timecopilot.models.stats", "AutoETS"),
-    "AutoCES": ("timecopilot.models.stats", "AutoCES"),
-    "Theta": ("timecopilot.models.stats", "Theta"),
-    "DynamicOptimizedTheta": ("timecopilot.models.stats", "DynamicOptimizedTheta"),
-    "ADIDA": ("timecopilot.models.stats", "ADIDA"),
-    "IMAPA": ("timecopilot.models.stats", "IMAPA"),
-    "CrostonClassic": ("timecopilot.models.stats", "CrostonClassic"),
-    "ZeroModel": ("timecopilot.models.stats", "ZeroModel"),
+#: Friendly name -> attribute in ``statsforecast.models``. These need no extra,
+#: no weights, and no torch; they are the default backend.
+STATS_MODELS: dict[str, str] = {
+    "SeasonalNaive": "SeasonalNaive",
+    "HistoricAverage": "HistoricAverage",
+    "AutoARIMA": "AutoARIMA",
+    "AutoETS": "AutoETS",
+    "AutoCES": "AutoCES",
+    "Theta": "Theta",
+    "DynamicOptimizedTheta": "DynamicOptimizedTheta",
+    "ADIDA": "ADIDA",
+    "IMAPA": "IMAPA",
+    "CrostonClassic": "CrostonClassic",
+    "ZeroModel": "ZeroModel",
+}
+
+#: Friendly name -> (module, attribute) inside TimeCopilot. Verified against
+#: timecopilot 0.0.30; ``probe`` exists so drift fails softly.
+TIMECOPILOT_MODELS: dict[str, tuple[str, str]] = {
     "Prophet": ("timecopilot.models.prophet", "Prophet"),
-    # foundation -- pretrained, download weights on first call
     "Chronos": ("timecopilot.models.foundation.chronos", "Chronos"),
     "FlowState": ("timecopilot.models.foundation.flowstate", "FlowState"),
     "Moirai": ("timecopilot.models.foundation.moirai", "Moirai"),
@@ -42,108 +48,165 @@ MODEL_REGISTRY: dict[str, tuple[str, str]] = {
     "Toto": ("timecopilot.models.foundation.toto", "Toto"),
 }
 
-#: Models that need no pretrained weights and run in seconds.
-STATISTICAL_MODELS = frozenset(
-    name
-    for name, (module, _) in MODEL_REGISTRY.items()
-    if "foundation" not in module
-)
+#: Every name this server recognises.
+MODEL_REGISTRY: dict[str, str] = {
+    **{name: "statistical" for name in STATS_MODELS},
+    **{name: "foundation" for name in TIMECOPILOT_MODELS},
+}
 
-#: Models that download weights and may need a GPU to be practical.
-FOUNDATION_MODELS = frozenset(MODEL_REGISTRY) - STATISTICAL_MODELS
+STATISTICAL_MODELS = frozenset(STATS_MODELS)
+FOUNDATION_MODELS = frozenset(TIMECOPILOT_MODELS)
 
-#: Models that reach an external API rather than running locally.
+#: Reaches an external API rather than running locally.
 REMOTE_MODELS = frozenset({"TimeGPT"})
+
+#: The extra that installs everything in :data:`TIMECOPILOT_MODELS`.
+EXTRA = "foundation"
 
 
 def family_of(name: str) -> str:
     """``'statistical'`` or ``'foundation'`` for a registered model name."""
-    return "statistical" if name in STATISTICAL_MODELS else "foundation"
+    return MODEL_REGISTRY.get(name, "foundation")
 
 
 def _cheap_alternatives() -> str:
-    return ", ".join(sorted(STATISTICAL_MODELS))
+    return ", ".join(sorted(STATS_MODELS))
 
 
-def _import_model(name: str) -> type[Any]:
-    """Import and return the model class, or raise an actionable ValueError."""
-    if name not in MODEL_REGISTRY:
+def timecopilot_available() -> bool:
+    """Whether the optional extra is installed, without importing the world."""
+    return importlib.util.find_spec("timecopilot") is not None
+
+
+def validate_names(names: list[str]) -> None:
+    """Reject unknown model names before any expensive work starts."""
+    for name in names:
+        if name in MODEL_REGISTRY:
+            continue
         close = [k for k in MODEL_REGISTRY if k.lower() == name.lower()]
         hint = f" Did you mean '{close[0]}'?" if close else ""
         raise ValueError(
             f"Unknown model '{name}'.{hint} Call tsf_list_models for the names "
             "available on this installation."
         )
-    module_path, attribute = MODEL_REGISTRY[name]
-    try:
-        module = importlib.import_module(module_path)
-    except ImportError as exc:
-        raise ValueError(
-            f"Model '{name}' could not be imported: {exc}. TimeCopilot ships "
-            "every model in the base install, so this usually means an "
-            "unsupported Python version or a broken optional dependency. "
-            f"Models that work right now: {_cheap_alternatives()}."
-        ) from None
-    try:
-        return getattr(module, attribute)  # type: ignore[no-any-return]
-    except AttributeError:
-        raise ValueError(
-            f"Model '{name}' is registered as {module_path}.{attribute}, but "
-            "that attribute does not exist in the installed timecopilot. The "
-            "registry is out of date; call tsf_list_models to see what "
-            "resolved."
-        ) from None
 
 
-def resolve(names: list[str]) -> list[Any]:
-    """Instantiate model objects from friendly names, preserving order."""
-    return [_import_model(name)() for name in names]
+def require_timecopilot(names: list[str]) -> None:
+    """Raise an actionable error if these models need an extra that is absent."""
+    validate_names(names)
+    if timecopilot_available():
+        return
+    raise ValueError(
+        f"{names} need the optional '{EXTRA}' extra, which is not installed. "
+        f"Install it with `uv pip install 'tslab-mcp[{EXTRA}]'` (this pulls "
+        "TimeCopilot and PyTorch, roughly 2 GB), or use a statistical model "
+        f"that works right now: {_cheap_alternatives()}."
+    )
 
 
-def forecaster(names: list[str]) -> Any:
-    """Build a ``TimeCopilotForecaster`` over the named models.
+def resolve_timecopilot(names: list[str]) -> list[Any]:
+    """Instantiate model objects from TimeCopilot, preserving order.
 
-    Imported here rather than at module scope: the import alone costs ~30s and
-    must never run during server startup.
+    Statistical names are resolved through TimeCopilot's own wrappers here,
+    because this path only runs when the request mixes families and the whole
+    batch has to go through one forecaster.
     """
-    from timecopilot import TimeCopilotForecaster
+    from timecopilot.models import stats as tc_stats
 
-    return TimeCopilotForecaster(models=resolve(names))
+    resolved: list[Any] = []
+    for name in names:
+        if name in STATS_MODELS:
+            resolved.append(getattr(tc_stats, STATS_MODELS[name])())
+            continue
+        module_path, attribute = TIMECOPILOT_MODELS[name]
+        try:
+            module = importlib.import_module(module_path)
+        except ImportError as exc:
+            raise ValueError(
+                f"Model '{name}' could not be imported: {exc}. This usually "
+                "means an unsupported Python version or a broken optional "
+                f"dependency. Models that work right now: {_cheap_alternatives()}."
+            ) from None
+        try:
+            resolved.append(getattr(module, attribute)())
+        except AttributeError:
+            raise ValueError(
+                f"Model '{name}' is registered as {module_path}.{attribute}, "
+                "but that attribute does not exist in the installed "
+                "timecopilot. Call tsf_list_models to see what resolved."
+            ) from None
+    return resolved
 
 
-def probe(family: str = "all", include_unavailable: bool = True) -> dict[str, Any]:
-    """Attempt every registered model, partitioned into available/unavailable.
+def _probe_statistical() -> tuple[list[str], dict[str, str]]:
+    available: list[str] = []
+    unavailable: dict[str, str] = {}
+    try:
+        from statsforecast import models as sf_models
+    except Exception as exc:  # noqa: BLE001 -- probing is the whole point
+        return [], {name: f"{type(exc).__name__}: {exc}" for name in STATS_MODELS}
+    for name, attribute in STATS_MODELS.items():
+        if hasattr(sf_models, attribute):
+            available.append(name)
+        else:
+            unavailable[name] = (
+                f"AttributeError: statsforecast.models has no '{attribute}'"
+            )
+    return available, unavailable
 
-    The reason string is the exception *message*, not just its type -- some
-    models fail with a genuinely actionable explanation (e.g. "requires Python
-    < 3.13") that a bare type name would throw away.
-    """
-    selected = {
-        name: spec
-        for name, spec in MODEL_REGISTRY.items()
-        if family == "all" or family_of(name) == family
-    }
+
+def _probe_timecopilot() -> tuple[list[str], dict[str, str]]:
+    if not timecopilot_available():
+        reason = (
+            f"not installed; add the '{EXTRA}' extra "
+            f"(`uv pip install 'tslab-mcp[{EXTRA}]'`)"
+        )
+        return [], dict.fromkeys(TIMECOPILOT_MODELS, reason)
 
     available: list[str] = []
     unavailable: dict[str, str] = {}
-    for name, (module_path, attribute) in selected.items():
+    for name, (module_path, attribute) in TIMECOPILOT_MODELS.items():
         try:
             module = importlib.import_module(module_path)
             getattr(module, attribute)
-        except Exception as exc:  # noqa: BLE001 -- probing is the whole point
+        except Exception as exc:  # noqa: BLE001 -- report, never raise
             unavailable[name] = f"{type(exc).__name__}: {exc}"
         else:
             available.append(name)
+    return available, unavailable
 
+
+def probe(family: str = "all", include_unavailable: bool = True) -> dict[str, Any]:
+    """Report which models actually resolve here, and why the rest do not.
+
+    Probing the statistical family is instant. Probing the foundation family
+    imports TimeCopilot when it is installed, which takes about 30 seconds the
+    first time — pass ``family='statistical'`` to avoid that entirely.
+    """
+    statistical: list[str] = []
+    foundation: list[str] = []
+    unavailable: dict[str, str] = {}
+
+    if family in ("all", "statistical"):
+        statistical, missing = _probe_statistical()
+        unavailable.update(missing)
+    if family in ("all", "foundation"):
+        foundation, missing = _probe_timecopilot()
+        unavailable.update(missing)
+
+    available = sorted(statistical + foundation)
     result: dict[str, Any] = {
-        "available": sorted(available),
+        "available": available,
         "n_available": len(available),
-        "statistical": sorted(n for n in available if n in STATISTICAL_MODELS),
-        "foundation": sorted(n for n in available if n in FOUNDATION_MODELS),
+        "statistical": sorted(statistical),
+        "foundation": sorted(foundation),
+        "backend": "statsforecast",
+        "foundation_extra_installed": timecopilot_available(),
         "notes": [
-            "Statistical models run in seconds and need no weights.",
-            "Foundation models download hundreds of MB on first call and are "
-            "much slower on CPU.",
+            "Statistical models run in seconds, need no weights, and are always "
+            "installed.",
+            f"Foundation models need the '{EXTRA}' extra; they download "
+            "hundreds of MB on first call and are slow on CPU.",
             "TimeGPT calls the Nixtla API and needs NIXTLA_API_KEY; every "
             "other model runs locally.",
         ],

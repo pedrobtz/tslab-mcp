@@ -30,10 +30,15 @@ dependencies = [
   "pyarrow>=15.0.0",
   "anyio>=4.0.0",
   "pydantic>=2.7",
-  "timecopilot>=0.0.30",
+  "statsforecast>=2.0.2",
+  "utilsforecast>=0.2.15",
 ]
 
 [project.optional-dependencies]
+# Pretrained foundation models (Chronos, Moirai, TimesFM, Toto, TiRex, ...) and
+# Prophet, via TimeCopilot. Pulls PyTorch and roughly 2 GB; the base install is
+# statistical models only and needs none of it.
+foundation = ["timecopilot>=0.0.30"]
 distributed = ["timecopilot[distributed]>=0.0.30"]
 
 [project.urls]
@@ -70,7 +75,10 @@ strict = true
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["pandas.*", "pyarrow.*", "timecopilot.*", "utilsforecast.*", "tsfeatures.*"]
+module = [
+  "pandas.*", "pyarrow.*", "timecopilot.*", "utilsforecast.*",
+  "statsforecast.*", "tsfeatures.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

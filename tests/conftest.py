@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from tslab_mcp import artifacts, registry
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip, rather than fail, the tests that need the optional extra.
+
+    TimeCopilot is no longer a core dependency, so a base install legitimately
+    cannot run these. Skipping keeps `pytest -m slow` meaningful in both
+    environments instead of erroring in one of them.
+    """
+    if importlib.util.find_spec("timecopilot") is not None:
+        return
+    skip = pytest.mark.skip(reason="needs the 'foundation' extra (timecopilot)")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)
