@@ -127,3 +127,50 @@ def test_panel_features_report_true_lengths(ragged_panel):
 def test_intermittent_series_shows_its_zeros(intermittent):
     row = series_features("i", intermittent["y"], intermittent["ds"], 12)
     assert row["pct_zero"] > 0.5
+
+
+# --------------------------------------------------------------------------
+# seasonal strength must not be confounded by trend
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("slope", [0, 1, 3, 6, 12])
+def test_seasonal_strength_is_trend_independent(slope):
+    """Identical seasonality, increasing trend: the score must not collapse.
+
+    The share-of-variance-by-calendar-position measure this replaced fell from
+    1.00 to 0.03 across this exact sweep, which would tell an agent that a
+    growing, strongly seasonal business series is not seasonal.
+    """
+    n = 72
+    season = 90 * np.sin(2 * np.pi * np.arange(n) / 12)
+    y = pd.Series(1000 + slope * np.arange(n) + season)
+    value = seasonal_strength(y, 12)
+    assert value is not None
+    assert value > 0.85, f"slope={slope} scored {value}"
+
+
+def test_trend_without_seasonality_scores_low():
+    n = 72
+    y = pd.Series(100 + 5 * np.arange(n, dtype=float))
+    value = seasonal_strength(y, 12)
+    assert value is not None
+    assert value < 0.5
+
+
+def test_seasonal_strength_rejects_missing_values():
+    """statsmodels does not reject NaN, and tsfeatures scores such a series 1.0
+    -- "perfectly seasonal" for data with a hole in it."""
+    n = 72
+    y = 100 + 30 * np.sin(2 * np.pi * np.arange(n) / 12)
+    y[40] = np.nan
+    assert seasonal_strength(pd.Series(y), 12) is None
+
+
+def test_seasonal_strength_survives_a_degenerate_decomposition():
+    """Whatever STL does with pathological input, the contract holds: a float in
+    [0, 1] or None, and never nan."""
+    for values in ([1.0, 1.0, 1.0] * 20, list(range(60)), [0.0, 1e9] * 30):
+        value = seasonal_strength(pd.Series(values, dtype=float), 12)
+        assert value is None or (0.0 <= value <= 1.0)
+        assert value is None or not math.isnan(value)

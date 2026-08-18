@@ -235,6 +235,11 @@ High seasonal strength and a clear trend argue for `AutoETS` and `AutoARIMA`
 over a naive baseline; a high `%zero` would have argued for `ADIDA` or
 `CrostonClassic` instead.
 
+`seasonal` is an STL strength — the seasonal component measured against what
+remains once the trend is removed — so a growing series still reports its
+seasonality honestly. It carries a noise floor of roughly 0.3–0.5: scores in
+that band mean "no evidence", not "mildly seasonal".
+
 **3. Check what is installed** with `tsf_list_models`, so you never propose a
 model this machine cannot run.
 

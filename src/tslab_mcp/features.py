@@ -90,22 +90,70 @@ def trend_strength(y: pd.Series) -> float | None:
 
 
 def seasonal_strength(y: pd.Series, period: int) -> float | None:
-    """Share of variance explained by the period means, clipped to ``[0, 1]``.
+    """Strength of seasonality after removing the trend, in ``[0, 1]``.
 
-    ``None`` when the series is shorter than two full cycles, or the data has
-    no variance to explain.
+    Uses the STL formulation ``1 - Var(remainder) / Var(seasonal + remainder)``
+    (Hyndman), which measures the seasonal component against what is left once
+    the trend is taken out. The obvious alternative -- share of variance
+    explained by the calendar-position means -- is *not* trend independent: on a
+    series with identical seasonality it falls from 1.00 to 0.03 as the trend
+    steepens, because the trend inflates the denominator while pulling the
+    position means toward the series mean. Growing business series are exactly
+    the case that trends and is seasonal, so that measure fails where it matters.
+
+    Read the number with its noise floor in mind: STL attributes some variance
+    to a seasonal component by chance, so pure noise scores roughly 0.3-0.5 here.
+    Values in that band mean "no evidence", not "mildly seasonal"; only clearly
+    higher values are worth acting on. That failure direction is the safe one in
+    this workflow -- a false positive is caught by cross-validation, whereas a
+    false negative means the seasonal model is never tried at all.
+
+    ``None`` -- never ``nan`` -- when the question is not answerable: a
+    non-seasonal frequency, fewer than two full cycles, missing values, or no
+    variance to explain.
     """
     if period <= 1 or len(y) < 2 * period:
         return None
     values = y.astype("float64").reset_index(drop=True)
+    # Guard explicitly: statsmodels does not reject NaN input, it silently
+    # returns a strength (tsfeatures returns 1.0, i.e. "perfectly seasonal",
+    # for a series with a hole in it).
+    if values.isna().any():
+        return None
     total = values.var(ddof=1)
     if pd.isna(total) or total <= 0:
         return None
-    cycle_position = pd.Series(range(len(values))) % period
-    between = values.groupby(cycle_position).mean().var(ddof=1)
-    if pd.isna(between):
+    return _stl_seasonal_strength(values, period)
+
+
+def _stl_seasonal_strength(values: pd.Series, period: int) -> float | None:
+    """STL seasonal strength, or ``None`` if the decomposition cannot be trusted.
+
+    ``statsmodels`` is always installed -- statsforecast depends on it -- so this
+    needs no optional-dependency dance. The seasonal smoother is set longer than
+    the series, which approximates R's ``s.window="periodic"`` and keeps trend
+    from leaking into the seasonal component (it roughly halves the score on a
+    trend-only series).
+    """
+    try:
+        from statsmodels.tsa.seasonal import STL
+    except ImportError:  # pragma: no cover -- statsforecast guarantees it
         return None
-    return _clean(min(max(between / total, 0.0), 1.0))
+
+    periodic_window = 2 * len(values) + 1  # odd, and longer than the series
+    try:
+        fitted = STL(
+            values, period=period, seasonal=periodic_window, robust=True
+        ).fit()
+    except Exception:  # noqa: BLE001 -- a feature is never worth failing a tool
+        return None
+
+    remainder, seasonal = fitted.resid, fitted.seasonal
+    denominator = (seasonal + remainder).var(ddof=1)
+    if pd.isna(denominator) or denominator <= 0:
+        return None
+    strength = 1 - remainder.var(ddof=1) / denominator
+    return _clean(min(max(strength, 0.0), 1.0))
 
 
 def acf1(y: pd.Series) -> float | None:

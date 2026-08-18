@@ -83,7 +83,7 @@ files = ["src"]
 [[tool.mypy.overrides]]
 module = [
   "pandas.*", "pyarrow.*", "timecopilot.*", "utilsforecast.*",
-  "statsforecast.*", "tsfeatures.*",
+  "statsforecast.*", "statsmodels.*", "tsfeatures.*",
 ]
 ignore_missing_imports = true
 

@@ -6,51 +6,40 @@ risk lives.
 
 ---
 
-## 0. Two blockers to settle before the first release
+## 0. Release readiness
 
-### The version is declared twice
+Both blockers this section used to carry are now resolved. Kept as a record of
+what was checked, and of what to re-check when TimeCopilot moves.
 
-`pyproject.toml` and `src/tslab_mcp/__init__.py` each carry `0.1.0`
-independently. Nothing keeps them in step, and `manifest.py` uses **both**:
-`__version__` for the `tslab_mcp` key, and the installed distribution metadata
-for the pinned package list. If they drift, an exported manifest reports two
-different versions of the same package — in a package whose entire purpose is a
-defensible lineage record.
+### The version is single-sourced ✅
 
-Single-source it before publishing. Hatchling reads the version straight out of
-the module:
+`pyproject.toml` declares `dynamic = ["version"]` and hatchling reads it from
+`src/tslab_mcp/__init__.py`, which is the only place a release number is edited.
+This matters because `manifest.py` reports both the module's `__version__` and
+the installed distribution metadata in the same lineage record, so drift would
+make an exported manifest self-contradictory.
 
-```toml
-# pyproject.toml
-[project]
--version = "0.1.0"
-+dynamic = ["version"]
+Verified by bumping the module to `9.9.9`, rebuilding, and getting a
+`tslab_mcp-9.9.9` wheel. To bump a release: edit that one line, commit, tag.
 
-+[tool.hatch.version]
-+path = "src/tslab_mcp/__init__.py"
-```
+### The supported Python range is tested ✅
 
-`src/tslab_mcp/__init__.py` then becomes the only place a release number is
-edited. Verify with `uv build && tar -tzf dist/*.tar.gz | head -1` — the
-directory name carries the version.
+CI runs the suite on 3.10, 3.11, 3.12 and 3.13 on every push, so
+`requires-python = ">=3.10"` is exercised rather than asserted. The base install
+resolves to 63 packages on 3.11–3.13 and 67 on 3.10, and all four report the
+same test count.
 
-### `requires-python = ">=3.10"` has only ever been tested on 3.13
+### What still needs judgement at release time
 
-The project declares support for 3.10–3.13 and ships classifiers to match, but
-every test run, lint pass and manual verification in this repo has happened on
-3.13. On 3.10–3.12 TimeCopilot pulls `tabpfn-time-series`, which pins
-`pandas<2.2`, so those interpreters get a *materially different* dependency set —
-pandas 2.1 with its older offset aliases, plus two extra models.
-
-Either test it or narrow the claim. To test:
-
-```bash
-uv run --python 3.10 --isolated pytest      # repeat for 3.11, 3.12
-```
-
-To narrow instead, set `requires-python = ">=3.13"` and drop the 3.10/3.11/3.12
-classifiers. Publishing an untested compatibility claim is the kind of thing
-that generates issues you cannot reproduce.
+- **Cross-backend parity.** `tests/test_parity.py` asserts the statsforecast and
+  TimeCopilot backends agree to 1e-9 on forecasts, intervals, MASE/sMAPE and the
+  anomaly column. It runs on the CI leg that installs the `foundation` extra.
+  Confirm that leg is green before tagging; a silent divergence would mean a
+  manifest exported from a base install does not reproduce on an extra install.
+- **TimeCopilot upgrades.** Its dependency pins are what constrain this
+  package's supported Python and pandas range, and it publishes no per-model
+  extras, which is why `foundation` is all-or-nothing. Re-check both on any
+  upgrade.
 
 ---
 
@@ -122,10 +111,11 @@ Then check the project page renders, the metadata reads correctly, and the
 description is not raw Markdown.
 
 **Do not expect a TestPyPI install to work.** TestPyPI does not mirror real
-dependencies, and this package needs TimeCopilot and its ~290 transitive
-packages. A plain `pip install -i https://test.pypi.org/simple tslab-mcp` will
-fail to resolve. To test the install path, pull the package from TestPyPI and
-its dependencies from real PyPI:
+dependencies, and even the light base install needs statsforecast, utilsforecast
+and mcp from real PyPI. A plain
+`pip install -i https://test.pypi.org/simple tslab-mcp` will fail to resolve. To
+test the install path, pull the package from TestPyPI and its dependencies from
+real PyPI:
 
 ```bash
 uv pip install \
@@ -184,10 +174,12 @@ uvx --refresh tslab-mcp --help 2>/dev/null || true
 npx @modelcontextprotocol/inspector uvx tslab-mcp
 ```
 
-The Inspector should list eight `tsf_*` tools with populated schemas. Expect the
-first run to take several minutes and roughly 2.3 GB of downloads — that is
-TimeCopilot's dependency tree, not a hung install. Worth confirming the README
-sets that expectation before people meet it unprepared.
+The Inspector should list eight `tsf_*` tools with populated schemas. The base
+install is ~340 MB and starts quickly. Repeat with the extra —
+`uvx --from 'tslab-mcp[foundation]' tslab-mcp` — and expect several minutes and
+roughly 2 GB the first time; that is TimeCopilot's dependency tree, not a hung
+install. Both shapes are worth checking, since they are separate code paths:
+`tsf_list_models` should report `foundation_extra_installed` accordingly.
 
 ---
 
@@ -200,6 +192,6 @@ sets that expectation before people meet it unprepared.
   deleting.
 - **Bumping**: edit the single version source, commit, tag `vX.Y.Z`, push the
   tag. Keep the tag and the metadata identical.
-- Re-run the §0 compatibility question on every TimeCopilot upgrade. Its
-  dependency pins move, and they are what constrain this package's supported
-  Python and pandas range.
+- Re-run the §0 checks on every TimeCopilot upgrade, and confirm the parity
+  test still passes: it is the thing standing between "the backends agree" and
+  a claim nobody has verified.

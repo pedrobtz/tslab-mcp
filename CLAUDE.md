@@ -130,6 +130,13 @@ looking snippet.
   needs gluonts. `features.py` keeps a richer table (`D → 7`, `W → 52`) for the
   descriptive seasonal-strength feature only. Verified to match gluonts exactly
   across 20 aliases; changing it silently changes every seasonal forecast.
+- **`seasonal_strength` is STL-based and must stay trend independent.** The
+  obvious "variance explained by calendar position" measure falls from 1.00 to
+  0.03 on identical seasonality as the trend steepens, which tells an agent that
+  a growing seasonal series is not seasonal. A parametrised regression test pins
+  this. Note the ~0.3–0.5 noise floor, and that neither statsmodels nor
+  tsfeatures rejects NaN input — tsfeatures scores such a series 1.0 — so the
+  guards in `seasonal_strength` are load-bearing, not decoration.
 - **stdout needs no protection.** The SDK's stdio transport already serves the
   wire from a private CLOEXEC duplicate of fd 1 and points fd 1 at stderr, so
   stray prints from the forecasting stack and its worker processes cannot
