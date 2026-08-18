@@ -59,8 +59,7 @@ uvx --from 'tslab-mcp[foundation]' tslab-mcp
 ### From GitHub
 
 `uv` and `uvx` both accept a git URL in place of a package name, which installs
-the current `main` without waiting for a release
-(see [submit-pypi.md](submit-pypi.md) for the PyPI status):
+the current `main` without waiting for a release:
 
 ```bash
 uvx --from git+https://github.com/pedrobtz/tslab-mcp tslab-mcp
