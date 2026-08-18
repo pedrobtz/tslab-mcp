@@ -1,1 +1,269 @@
 # tslab-mcp
+
+An MCP server that exposes the deterministic forecasting core of
+[TimeCopilot](https://timecopilot.dev) as tools, so your Claude session is the
+reasoning engine and every number comes from ordinary, reproducible Python.
+
+No LLM is called anywhere in this package. No API key is required.
+
+## Why
+
+TimeCopilot ships two entry points: `TimeCopilot`, an agent that needs an LLM to
+read features, pick a model, and explain the result; and
+`TimeCopilotForecaster`, a plain forecasting layer that needs nothing. Inside a
+Claude session, the first one nests an agent inside an agent — two prompts, two
+bills, two sources of nondeterminism, and an opaque middle layer that makes the
+model-selection rationale unauditable.
+
+So control is inverted: `TimeCopilotForecaster` is the tool, the session is the
+agent. The session reads the features, argues for a model family,
+cross-validates the candidates, and writes the rationale into a manifest. Every
+number on the way is produced by a library call you can rerun without an LLM in
+the path.
+
+## Install
+
+Requires Python 3.10+ (3.13 recommended, see [Python version](#python-version)).
+
+```bash
+uvx tslab-mcp                     # run without installing
+uv tool install tslab-mcp         # or install the CLI
+```
+
+From a checkout:
+
+```bash
+uv sync
+uv run tslab-mcp
+```
+
+> TimeCopilot pulls in torch, transformers, lightning, prophet and friends — the
+> first install downloads roughly 2 GB and the first tool call that touches
+> TimeCopilot spends ~30 seconds importing it. Both are one-off.
+
+## Configure
+
+Add to your MCP client (`claude_desktop_config.json`, or `.mcp.json` for Claude
+Code):
+
+```json
+{
+  "mcpServers": {
+    "tslab": {
+      "command": "uvx",
+      "args": ["tslab-mcp"],
+      "env": {
+        "TSLAB_MCP_HOME": "~/.tslab-mcp"
+      }
+    }
+  }
+}
+```
+
+`TSLAB_MCP_HOME` sets where artifacts are written; it defaults to
+`~/.tslab-mcp`, and run outputs land in `<home>/runs`.
+
+Transport is stdio only, by design: your data is assumed sensitive and never
+leaves the machine. The server makes no outbound requests except the model
+weight downloads TimeCopilot itself performs for foundation models.
+
+### GitHub Copilot
+
+Copilot discovers MCP servers from an `mcp.json` file and exposes their tools in
+**agent mode** — the tools do not appear in ask or edit mode.
+
+**VS Code.** Put the server in `.vscode/mcp.json` to share it with the repo, or
+run **MCP: Open User Configuration** from the Command Palette to keep it in your
+own profile across every workspace. Note the key is `servers`, not `mcpServers`:
+
+```json
+{
+  "servers": {
+    "tslab": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["tslab-mcp"],
+      "env": {
+        "TSLAB_MCP_HOME": "${userHome}/.tslab-mcp"
+      }
+    }
+  }
+}
+```
+
+From a checkout, point it at the working tree instead:
+
+```json
+{
+  "servers": {
+    "tslab": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "${workspaceFolder}", "tslab-mcp"]
+    }
+  }
+}
+```
+
+Then: open Chat, switch the mode selector to **Agent**, and use the **Tools**
+button to confirm the seven `tsf_*` tools are listed and enabled. `MCP: List
+Servers` shows the server's status and its logs, which is where a failed start
+is explained. Copilot caps how many tools can be active at once, so if you run
+several MCP servers you may need to deselect some to fit all seven.
+
+**Visual Studio.** Same JSON shape, in `.mcp.json` at the solution root (or
+`%USERPROFILE%\.mcp.json` for all solutions), then enable the tools from the
+Copilot Chat agent-mode tool picker.
+
+**JetBrains, Eclipse, and Xcode.** Open the Copilot Chat agent-mode tool picker,
+choose **Edit MCP configuration**, and add the same `servers` entry to the
+`mcp.json` it opens.
+
+> **Copilot coding agent** (the cloud agent on github.com) is a poor fit for this
+> server: it runs your MCP servers inside an ephemeral GitHub Actions
+> environment, which means paying the ~2 GB TimeCopilot install on every run, and
+> it has no access to local data files. Use it from your editor instead.
+
+## Tools
+
+| Tool | Purpose | Returns |
+|---|---|---|
+| `tsf_load_series` | Read CSV/Parquet, validate the `unique_id`/`ds`/`y` contract, infer frequency, register a handle | JSON summary + SHA-256 |
+| `tsf_describe_series` | Per-series features for choosing a model family | Markdown table or JSON, row-capped |
+| `tsf_list_models` | Probe which models actually import here | `{available, statistical, foundation, unavailable}` |
+| `tsf_cross_validate` | Rolling-origin comparison across models | Metric table, ranking, parquet path |
+| `tsf_forecast` | Fit and forecast with prediction intervals | Parquet path + bounded preview |
+| `tsf_detect_anomalies` | Cross-validated interval flagging | Counts, capped flag list, parquet path |
+| `tsf_export_run` | Pin the session to a re-runnable manifest | Manifest path |
+
+Everything except `tsf_export_run` is marked read-only; nothing here deletes, so
+cleaning up `~/.tslab-mcp/runs` is your business, not the agent's.
+
+## A worked session
+
+Start from a CSV in Nixtla long format:
+
+```csv
+unique_id,ds,y
+branch_01,2018-01-01,1043.2
+branch_01,2018-02-01,1102.7
+...
+```
+
+**1. Load it.** The panel stays in the server process; the handle is all the
+session carries.
+
+```json
+{"handle": "deposits", "n_series": 12, "n_obs": 864, "freq": "MS",
+ "start": "2018-01-01T00:00:00", "end": "2023-12-01T00:00:00",
+ "obs_per_series": {"min": 72, "median": 72, "max": 72},
+ "n_missing_y": 0, "sha256": "9f2c…"}
+```
+
+**2. Describe it.** These are the numbers you reason over.
+
+```
+| id        | n  | mean   | cv    | %zero | trend | seasonal | acf1(diff) |
+|-----------|----|--------|-------|-------|-------|----------|------------|
+| branch_01 | 72 | 1180.4 | 0.112 | 0.0   | 0.83  | 0.62     | -0.31      |
+```
+
+High seasonal strength and a clear trend argue for `AutoETS` and `AutoARIMA`
+over a naive baseline; a high `%zero` would have argued for `ADIDA` or
+`CrostonClassic` instead.
+
+**3. Check what is installed** with `tsf_list_models`, so you never propose a
+model this machine cannot run.
+
+**4. Cross-validate the candidates** — always including `SeasonalNaive`, since a
+model that cannot beat it is not worth deploying:
+
+```json
+{"kind": "cross_validation", "models": ["SeasonalNaive", "AutoETS", "AutoARIMA"],
+ "h": 12, "n_windows": 4, "seasonality_used_for_mase": 12,
+ "metrics": {"mase": {"SeasonalNaive": 1.0, "AutoETS": 0.71, "AutoARIMA": 0.68}},
+ "ranking": {"mase": ["AutoARIMA", "AutoETS", "SeasonalNaive"]},
+ "artifact": "~/.tslab-mcp/runs/cv_deposits_3f1a9c02.parquet"}
+```
+
+**5. Forecast** with the winner. The full frame goes to parquet; the response
+carries the path, the columns, and a short preview.
+
+**6. Export the run.** Write down *why*, in the note — it is the only part of
+your reasoning that outlives the conversation:
+
+```json
+{"manifest": "~/.tslab-mcp/runs/manifest_deposits_77b0e415.json", "n_runs": 3,
+ "kinds": ["cross_validation", "forecast"]}
+```
+
+The manifest holds the source path and hash, the frequency, every call with its
+arguments and artifact paths, the pinned versions of TimeCopilot, statsforecast,
+pandas, torch and Python, and your note. It is sufficient to reproduce the
+numbers with the server stopped.
+
+## Design
+
+Four invariants, and the reasons they exist:
+
+**Handles, not dataframes.** One cross-validation frame is
+`n_series × h × n_windows × n_models` rows. Serialising it into a tool result
+exhausts the session's context on the first call and makes every later turn
+worse. Tools take a handle and return summaries, aggregates, and file paths;
+every bulk path is capped and reports what it omitted, so the session knows to
+read the parquet rather than ask again.
+
+**Blocking work never touches the event loop.** Cross-validating several models
+over a large panel is minutes of CPU. Every tool body is a synchronous closure
+dispatched through `anyio.to_thread.run_sync`, so the stdio transport keeps
+answering and the client does not drop the server mid-run.
+
+**The environment is discovered, not assumed.** Models are imported lazily and
+probed, never assumed present. This is also why the server starts instantly
+despite a 30-second dependency: nothing imports TimeCopilot until a tool needs
+it. (It matters more than it looks — statsforecast parallelises across worker
+processes that re-import the entry module, so an eager import would be paid once
+per worker, per call.)
+
+Expect the first tool call that touches TimeCopilot to spend ~30 seconds
+importing it, and the first cross-validation in a fresh process to pay numba's
+JIT compilation on top. Both are one-off per server process; later calls are
+much faster. `tsf_load_series` and `tsf_describe_series` skip TimeCopilot
+entirely and always return immediately.
+
+**The manifest is the artifact of record.** Prose in the conversation is
+commentary. The manifest is what someone reruns in six months, and what a
+reviewer reads to see which models were compared and on what basis.
+
+## Python version
+
+TimeCopilot gates several models on the interpreter version, and on Python < 3.13
+it pins `tabpfn-time-series`, which caps pandas below 2.2.
+
+| Python | Models | pandas |
+|---|---|---|
+| 3.13 | everything except `TabPFN` and `Sundial` | ≥ 2.2 |
+| 3.10–3.12 | adds `TabPFN`, `Sundial` | < 2.2 |
+
+3.13 is the recommended target. Either way, `tsf_list_models` reports what
+actually resolved, with the reason for anything that did not.
+
+## Development
+
+```bash
+uv sync --all-groups
+uv run pytest                  # fast suite
+uv run pytest -m slow          # exercises TimeCopilot; slower, no weight downloads
+uv run ruff check src tests
+uv run mypy
+```
+
+Inspect the tool surface with the MCP Inspector:
+
+```bash
+npx @modelcontextprotocol/inspector uv run tslab-mcp
+```
+
+## License
+
+MIT

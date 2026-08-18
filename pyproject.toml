@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tslab-mcp"
+version = "0.1.0"
+description = "MCP server exposing the deterministic forecasting core of TimeCopilot as tools, with no LLM in the path."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Pedro Baltazar", email = "pedrobtz@gmail.com" }]
+maintainers = [{ name = "Pedro Baltazar", email = "pedrobtz@gmail.com" }]
+keywords = ["mcp", "time-series", "forecasting", "timecopilot", "nixtla"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+  "mcp>=1.2.0",
+  "pandas>=2.1.2",
+  "pyarrow>=15.0.0",
+  "anyio>=4.0.0",
+  "pydantic>=2.7",
+  "timecopilot>=0.0.30",
+]
+
+[project.optional-dependencies]
+distributed = ["timecopilot[distributed]>=0.0.30"]
+
+[project.urls]
+Homepage = "https://github.com/pedrobtz/tslab-mcp"
+Repository = "https://github.com/pedrobtz/tslab-mcp"
+Issues = "https://github.com/pedrobtz/tslab-mcp/issues"
+
+[project.scripts]
+tslab-mcp = "tslab_mcp.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "pandas-stubs",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tslab_mcp"]
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "BLE"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["pandas.*", "pyarrow.*", "timecopilot.*", "utilsforecast.*", "tsfeatures.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "slow: imports TimeCopilot (~30s) or downloads model weights; excluded by default",
+]
+addopts = "-m 'not slow'"
