@@ -1,25 +1,37 @@
 # tslab-mcp
 
-An MCP server that exposes the deterministic forecasting core of
-[TimeCopilot](https://timecopilot.dev) as tools, so your Claude session is the
-reasoning engine and every number comes from ordinary, reproducible Python.
+An MCP server that exposes deterministic time-series forecasting as tools, so
+your agent is the reasoning engine and every number comes from ordinary,
+reproducible Python.
 
-No LLM is called anywhere in this package. No API key is required.
+No LLM is called anywhere in this package. No API key is required (unless you
+ask for `TimeGPT`, which calls the Nixtla API).
 
 ## Why
 
-TimeCopilot ships two entry points: `TimeCopilot`, an agent that needs an LLM to
-read features, pick a model, and explain the result; and
-`TimeCopilotForecaster`, a plain forecasting layer that needs nothing. Inside a
-Claude session, the first one nests an agent inside an agent — two prompts, two
-bills, two sources of nondeterminism, and an opaque middle layer that makes the
-model-selection rationale unauditable.
+Some forecasting libraries ship an agent that reads features, picks a model,
+and explains the result with an LLM in the loop. Calling one of those from your
+own agent nests an agent inside an agent — two prompts, two bills, two sources
+of nondeterminism, and an opaque middle layer that makes the model-selection
+rationale unauditable.
 
-So control is inverted: `TimeCopilotForecaster` is the tool, the session is the
-agent. The session reads the features, argues for a model family,
+So control is inverted here: the forecasting library is the tool, and your
+agent is the one reasoning. It reads the features, argues for a model family,
 cross-validates the candidates, and writes the rationale into a manifest. Every
 number on the way is produced by a library call you can rerun without an LLM in
 the path.
+
+That split carries into how the package itself is built. The base install runs
+eleven statistical models — `AutoARIMA`, `AutoETS`, `Theta`, `CrostonClassic`
+and friends — through [statsforecast](https://github.com/Nixtla/statsforecast):
+roughly 340 MB, no PyTorch, and it starts in seconds. An optional `foundation`
+extra adds [TimeCopilot](https://timecopilot.dev)'s pretrained models —
+Chronos, Moirai, TimesFM, TiRex, Toto and others — plus Prophet, for when a
+statistical baseline isn't enough. A request that only names statistical models
+never imports TimeCopilot or torch; a request that names even one foundation
+model runs entirely through TimeCopilot, which carries the statistical models
+too. Either way `tsf_list_models` reports what's actually installed before you
+commit to a model.
 
 ## Install
 
@@ -44,9 +56,33 @@ uvx --from 'tslab-mcp[foundation]' tslab-mcp
 > it spends ~30 seconds importing. Both are one-off, and neither is paid unless
 > you ask for a model that needs them.
 
-From a checkout:
+### From GitHub
+
+`uv` and `uvx` both accept a git URL in place of a package name, which installs
+the current `main` without waiting for a release
+(see [submit-pypi.md](submit-pypi.md) for the PyPI status):
 
 ```bash
+uvx --from git+https://github.com/pedrobtz/tslab-mcp tslab-mcp
+uv tool install git+https://github.com/pedrobtz/tslab-mcp        # or install the CLI
+
+# with the foundation extra
+uvx --from 'tslab-mcp[foundation] @ git+https://github.com/pedrobtz/tslab-mcp' tslab-mcp
+```
+
+Pin a ref for anything other than casual testing — the branch head can move
+under you otherwise. A commit works today; a version tag will too once one is
+cut:
+
+```bash
+uv tool install "git+https://github.com/pedrobtz/tslab-mcp@136824c1cc2a"
+```
+
+### From a checkout
+
+```bash
+git clone https://github.com/pedrobtz/tslab-mcp
+cd tslab-mcp
 uv sync                              # base
 uv sync --extra foundation           # with the pretrained models
 uv run tslab-mcp
@@ -54,8 +90,8 @@ uv run tslab-mcp
 
 ## Configure
 
-Add to your MCP client (`claude_desktop_config.json`, or `.mcp.json` for Claude
-Code):
+Add the server to your MCP client's configuration. The file differs per client —
+often `.mcp.json` in the project root — but the entry itself is the same shape:
 
 ```json
 {
@@ -76,7 +112,8 @@ Code):
 
 Transport is stdio only, by design: your data is assumed sensitive and never
 leaves the machine. The server makes no outbound requests except the model
-weight downloads TimeCopilot itself performs for foundation models.
+weight downloads TimeCopilot itself performs for foundation models, and the
+Nixtla API calls `TimeGPT` makes if you ask for it specifically.
 
 ### GitHub Copilot
 
@@ -199,8 +236,10 @@ Shorter openers, when you know what you want:
 > over 6 windows at h=12, then tell me whether anything beats the baseline by
 > enough to be worth the extra complexity.
 
-The first call that touches a model spends ~30 seconds importing TimeCopilot, so
-an early pause is expected rather than a hang.
+Statistical-only calls answer in seconds. The first call that names a
+foundation model spends ~30 seconds importing TimeCopilot before it does
+anything else — that pause is expected, not a hang, and it only happens if the
+`foundation` extra is installed and a request actually reaches for one.
 
 ## A worked session
 
@@ -266,9 +305,10 @@ only part of your reasoning that outlives the conversation:
 ```
 
 The manifest holds the source path and hash, the frequency, every call with its
-arguments and artifact paths, the pinned versions of TimeCopilot, statsforecast,
-pandas, torch and Python, and your note. It is sufficient to reproduce the
-numbers with the server stopped.
+arguments and artifact paths, the pinned versions of whatever's actually
+installed — statsforecast, pandas and Python always; TimeCopilot and torch too
+if the `foundation` extra is in — and your note. It is sufficient to reproduce
+the numbers with the server stopped.
 
 `tsf_export_report` turns that same manifest into something a person reads —
 features, metric tables ordered best-first, forecasts, anomalies and the
