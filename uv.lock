@@ -8587,7 +8587,6 @@ wheels = [
 
 [[package]]
 name = "tslab-mcp"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
@@ -8631,7 +8630,7 @@ requires-dist = [
     { name = "timecopilot", extras = ["distributed"], marker = "extra == 'distributed'", specifier = ">=0.0.30" },
     { name = "utilsforecast", specifier = ">=0.2.15" },
 ]
-provides-extras = ["foundation", "distributed"]
+provides-extras = ["distributed", "foundation"]
 
 [package.metadata.requires-dev]
 dev = [

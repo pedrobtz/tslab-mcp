@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tslab-mcp"
-version = "0.1.0"
+# Single-sourced from src/tslab_mcp/__init__.py: manifest.py reports both the
+# module's __version__ and the installed distribution metadata, so the two
+# drifting apart would make an exported lineage record self-contradictory.
+dynamic = ["version"]
 description = "MCP server exposing the deterministic forecasting core of TimeCopilot as tools, with no LLM in the path."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -57,6 +60,9 @@ dev = [
   "mypy>=1.11",
   "pandas-stubs",
 ]
+
+[tool.hatch.version]
+path = "src/tslab_mcp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tslab_mcp"]
