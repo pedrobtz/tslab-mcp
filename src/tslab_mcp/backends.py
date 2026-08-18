@@ -88,7 +88,10 @@ class StatsForecastBackend:
     def forecast(
         self, df: pd.DataFrame, h: int, freq: str, level: list[int] | None
     ) -> pd.DataFrame:
-        return self._engine(freq).forecast(h=h, df=df, level=level or None)
+        out: pd.DataFrame = self._engine(freq).forecast(
+            h=h, df=df, level=level or None
+        )
+        return out
 
     def cross_validation(
         self,
@@ -98,9 +101,10 @@ class StatsForecastBackend:
         n_windows: int,
         step_size: int | None,
     ) -> pd.DataFrame:
-        return self._engine(freq).cross_validation(
+        out: pd.DataFrame = self._engine(freq).cross_validation(
             h=h, df=df, n_windows=n_windows, step_size=step_size or h
         )
+        return out
 
     def detect_anomalies(
         self,
@@ -117,7 +121,7 @@ class StatsForecastBackend:
         what the other backend produces.
         """
         windows = n_windows if n_windows is not None else _max_windows(df, h)
-        result = self._engine(freq).cross_validation(
+        result: pd.DataFrame = self._engine(freq).cross_validation(
             h=h, df=df, n_windows=windows, step_size=h, level=[level]
         )
         for alias in self.model_names:
@@ -146,7 +150,10 @@ class TimeCopilotBackend:
     def forecast(
         self, df: pd.DataFrame, h: int, freq: str, level: list[int] | None
     ) -> pd.DataFrame:
-        return self._forecaster().forecast(df=df, h=h, freq=freq, level=level or None)
+        out: pd.DataFrame = self._forecaster().forecast(
+            df=df, h=h, freq=freq, level=level or None
+        )
+        return out
 
     def cross_validation(
         self,
@@ -156,9 +163,10 @@ class TimeCopilotBackend:
         n_windows: int,
         step_size: int | None,
     ) -> pd.DataFrame:
-        return self._forecaster().cross_validation(
+        out: pd.DataFrame = self._forecaster().cross_validation(
             df=df, h=h, freq=freq, n_windows=n_windows, step_size=step_size
         )
+        return out
 
     def detect_anomalies(
         self,
@@ -168,9 +176,10 @@ class TimeCopilotBackend:
         n_windows: int | None,
         level: int,
     ) -> pd.DataFrame:
-        return self._forecaster().detect_anomalies(
+        out: pd.DataFrame = self._forecaster().detect_anomalies(
             df=df, h=h, freq=freq, n_windows=n_windows, level=level
         )
+        return out
 
 
 def _max_windows(df: pd.DataFrame, h: int) -> int:

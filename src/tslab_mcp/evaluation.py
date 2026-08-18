@@ -68,7 +68,7 @@ def _aggregate(result: pd.DataFrame, models: list[str]) -> dict[str, dict[str, f
     aggregated = result.groupby("metric")[columns].mean().round(6)
     return {
         str(metric): {
-            model: float(value)
+            str(model): float(value)
             for model, value in row.items()
             if pd.notna(value)
         }

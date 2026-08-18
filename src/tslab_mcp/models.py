@@ -13,6 +13,7 @@ a traceback ten minutes into a run.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 from typing import Any
 
 #: Friendly name -> attribute in ``statsforecast.models``. These need no extra,
