@@ -108,12 +108,17 @@ jobs:
           names = set(archive.namelist())
           required = {
               "tslab_mcp/__init__.py", "tslab_mcp/server.py",
-              "tslab_mcp/report.py", "tslab_mcp/py.typed",
+              "tslab_mcp/report.py", "tslab_mcp/agent_workflow.md",
+              "tslab_mcp/selection.py", "tslab_mcp/py.typed",
           }
           missing = required - names
           assert not missing, f"missing from wheel: {sorted(missing)}"
           entry = next(n for n in names if n.endswith("entry_points.txt"))
           assert "tslab-mcp" in archive.read(entry).decode()
+          metadata = next(n for n in names if n.endswith("METADATA"))
+          metadata_text = archive.read(metadata).decode()
+          assert "Requires-Dist: mcp>=2.0.0" in metadata_text
+          assert "Requires-Dist: statsforecast>=2.1.1" in metadata_text
           print(f"{whl.name}: {len(names)} files, entry point present")
           PY
 
@@ -122,14 +127,16 @@ jobs:
       - name: Installed wheel serves its tools
         if: matrix.python-version == '3.13'
         run: |
-          uv run --isolated --no-project -p 3.13 --with dist/*.whl -- python - <<'PY'
+          uv run --no-cache --isolated --no-project -p 3.13 --with dist/*.whl --with mcp==2.0.0 --with statsforecast==2.1.1 -- python - <<'PY'
           import asyncio
           from tslab_mcp.server import mcp
           tools = asyncio.run(mcp.list_tools())
-          assert len(tools) == 8, [t.name for t in tools]
+          assert len(tools) == 9, [t.name for t in tools]
           assert all(t.description and t.annotations for t in tools)
-          assert {t.name for t in tools if not t.annotations.read_only_hint} == {
-              "tsf_export_run", "tsf_export_report"
+          assert "Complete analysis workflow" in (mcp.instructions or "")
+          assert "If no challenger qualifies" in (mcp.instructions or "")
+          assert {t.name for t in tools if t.annotations.read_only_hint} == {
+              "tsf_list_models"
           }
           print("tools:", ", ".join(sorted(t.name for t in tools)))
           PY

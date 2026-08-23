@@ -29,6 +29,7 @@ from tslab_mcp.schemas import (
     ListModelsInput,
     LoadSeriesInput,
     ResponseFormat,
+    SelectModelInput,
 )
 from tslab_mcp.server import (
     mcp,
@@ -40,6 +41,7 @@ from tslab_mcp.server import (
     tsf_forecast,
     tsf_list_models,
     tsf_load_series,
+    tsf_select_model,
 )
 
 TOOL_FUNCTIONS = [
@@ -47,6 +49,7 @@ TOOL_FUNCTIONS = [
     tsf_describe_series,
     tsf_list_models,
     tsf_cross_validate,
+    tsf_select_model,
     tsf_forecast,
     tsf_detect_anomalies,
     tsf_export_run,
@@ -58,6 +61,7 @@ EXPECTED_TOOL_NAMES = {
     "tsf_describe_series",
     "tsf_list_models",
     "tsf_cross_validate",
+    "tsf_select_model",
     "tsf_forecast",
     "tsf_detect_anomalies",
     "tsf_export_run",
@@ -85,16 +89,26 @@ async def test_every_tool_declares_annotations():
     for tool in await mcp.list_tools():
         assert tool.annotations is not None, tool.name
         assert tool.annotations.title, tool.name
-        assert tool.annotations.open_world_hint is False, tool.name
 
 
-async def test_only_export_run_is_declared_writing():
-    writing = {
-        tool.name
-        for tool in await mcp.list_tools()
-        if tool.annotations and tool.annotations.read_only_hint is False
+async def test_tool_annotations_match_side_effects_and_network_reach():
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+    read_only = {
+        name for name, tool in tools.items() if tool.annotations.read_only_hint
     }
-    assert writing == {"tsf_export_run", "tsf_export_report"}
+    open_world = {
+        name for name, tool in tools.items() if tool.annotations.open_world_hint
+    }
+    destructive = {
+        name for name, tool in tools.items() if tool.annotations.destructive_hint
+    }
+    assert read_only == {"tsf_list_models"}
+    assert open_world == {
+        "tsf_cross_validate",
+        "tsf_forecast",
+        "tsf_detect_anomalies",
+    }
+    assert destructive == {"tsf_load_series"}
 
 
 async def test_every_tool_exposes_a_pydantic_schema():
@@ -266,6 +280,28 @@ async def test_cross_validate_returns_a_metric_table_and_artifact(loaded):
     assert len(registry.get("clean").runs) == 1
 
 
+async def test_select_model_validates_and_records_the_agent_proposal(loaded):
+    loaded.runs.append(
+        {
+            "kind": "cross_validation",
+            "at": "2026-08-22T00:00:00+00:00",
+            "artifact": "/tmp/cv.parquet",
+            "metrics": {
+                "mase": {"SeasonalNaive": 1.0, "AutoETS": 0.75}
+            },
+        }
+    )
+    payload = json.loads(
+        await tsf_select_model(
+            SelectModelInput(handle="clean", proposed_model="AutoETS")
+        )
+    )
+    assert payload["status"] == "validated_challenger"
+    assert payload["selected_model"] == "AutoETS"
+    assert payload["baseline_score"] == 1.0
+    assert registry.get("clean").runs[-1]["kind"] == "model_selection"
+
+
 async def test_forecast_writes_parquet_and_previews(loaded):
     payload = json.loads(
         await tsf_forecast(
@@ -294,6 +330,32 @@ async def test_forecast_preview_can_be_switched_off(loaded):
     assert payload["preview"] == []
 
 
+async def test_intermittent_forecast_records_conformal_intervals(
+    tmp_path, intermittent
+):
+    path = tmp_path / "intermittent.csv"
+    intermittent.to_csv(path, index=False)
+    registry.load_panel(str(path), handle="intermittent")
+
+    payload = json.loads(
+        await tsf_forecast(
+            ForecastInput(handle="intermittent", models=["CrostonClassic"], h=3)
+        )
+    )
+
+    assert payload["prediction_intervals"]["conformal_models"] == [
+        "CrostonClassic"
+    ]
+    assert payload["prediction_intervals"]["conformal"] == {
+        "method": "conformal_distribution",
+        "n_windows": 2,
+        "h": 3,
+    }
+    assert {"CrostonClassic-lo-80", "CrostonClassic-hi-95"} <= set(
+        payload["columns"]
+    )
+
+
 async def test_detect_anomalies_counts_flags(loaded):
     payload = json.loads(
         await tsf_detect_anomalies(
@@ -303,10 +365,31 @@ async def test_detect_anomalies_counts_flags(loaded):
         )
     )
     assert payload["kind"] == "anomalies"
-    assert payload["note"] is None
+    assert payload["n_windows"] == 4
+    assert payload["n_windows_requested"] == 4
     assert isinstance(payload["n_flagged"], int)
     assert payload["n_flagged"] <= payload["n_rows_tested"]
     assert Path(payload["artifact"]).exists()
+
+
+async def test_irregular_panel_is_diagnosed_but_cannot_be_analysed(
+    tmp_path, irregular
+):
+    path = tmp_path / "irregular.csv"
+    irregular.to_csv(path, index=False)
+
+    loaded = json.loads(
+        await tsf_load_series(
+            LoadSeriesInput(path=str(path), handle="irregular", freq="D")
+        )
+    )
+    assert loaded["integrity"]["is_regular"] is False
+
+    with pytest.raises(ValueError, match="Regularize the source explicitly"):
+        await tsf_forecast(
+            ForecastInput(handle="irregular", models=["HistoricAverage"], h=1)
+        )
+    assert registry.get("irregular").runs == []
 
 
 async def test_unknown_model_points_at_the_probe(loaded):

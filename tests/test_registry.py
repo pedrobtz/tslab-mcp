@@ -27,8 +27,8 @@ def test_summary_is_json_safe_and_complete(loaded):
     summary = registry.summarize(loaded)
     expected = {
         "handle", "source", "sha256", "freq", "n_series", "n_obs", "start",
-        "end", "obs_per_series", "n_missing_y", "extra_columns", "loaded_at",
-        "replaced_existing_handle",
+        "end", "obs_per_series", "n_missing_y", "integrity", "extra_columns",
+        "loaded_at", "replaced_existing_handle",
     }
     assert expected <= set(summary)
     assert summary["n_obs"] == 72
@@ -103,6 +103,47 @@ def test_explicit_freq_overrides_failed_inference(tmp_path, irregular):
     irregular.to_csv(path, index=False)
     series, _ = registry.load_panel(str(path), freq="D")
     assert series.freq == "D"
+    assert series.integrity["is_regular"] is False
+    assert series.integrity["n_missing_timestamps"] > 0
+
+
+def test_irregular_panel_is_reported_then_blocked(tmp_path, irregular):
+    path = tmp_path / "irregular.csv"
+    irregular.to_csv(path, index=False)
+    series, _ = registry.load_panel(str(path), freq="D")
+    summary = registry.summarize(series)
+    assert summary["integrity"]["n_series_affected"] == 1
+    with pytest.raises(ValueError, match="Regularize the source"):
+        registry.require_regular(series)
+
+
+def test_invalid_explicit_frequency_is_rejected(csv_path):
+    with pytest.raises(ValueError, match="Invalid frequency"):
+        registry.load_panel(csv_path, freq="banana")
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "match"),
+    [
+        ("unique_id", None, "missing"),
+        ("unique_id", "   ", "blank"),
+        ("ds", None, "timestamp"),
+        ("y", None, "non-finite"),
+        ("y", "not-a-number", "non-finite"),
+        ("y", float("inf"), "non-finite"),
+    ],
+)
+def test_invalid_required_values_are_rejected(
+    tmp_path, seasonal_monthly, column, value, match
+):
+    frame = seasonal_monthly.copy()
+    if column == "y" and isinstance(value, str):
+        frame["y"] = frame["y"].astype(object)
+    frame.loc[0, column] = value
+    path = tmp_path / "invalid.csv"
+    frame.to_csv(path, index=False)
+    with pytest.raises(ValueError, match=match):
+        registry.load_panel(str(path), freq="MS")
 
 
 def test_frequency_inferred_from_the_longest_series(panel_path):

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 from typing import Any
 
 #: Friendly name -> attribute in ``statsforecast.models``. These need no extra,
@@ -117,7 +118,10 @@ def resolve_timecopilot(names: list[str]) -> list[Any]:
     resolved: list[Any] = []
     for name in names:
         if name in STATS_MODELS:
-            resolved.append(getattr(tc_stats, STATS_MODELS[name])())
+            cls = getattr(tc_stats, STATS_MODELS[name])
+            parameters = inspect.signature(cls).parameters
+            kwargs = {"alias": name} if "alias" in parameters else {}
+            resolved.append(cls(**kwargs))
             continue
         module_path, attribute = TIMECOPILOT_MODELS[name]
         try:
@@ -129,7 +133,10 @@ def resolve_timecopilot(names: list[str]) -> list[Any]:
                 f"dependency. Models that work right now: {_cheap_alternatives()}."
             ) from None
         try:
-            resolved.append(getattr(module, attribute)())
+            cls = getattr(module, attribute)
+            parameters = inspect.signature(cls).parameters
+            kwargs = {"alias": name} if "alias" in parameters else {}
+            resolved.append(cls(**kwargs))
         except AttributeError:
             raise ValueError(
                 f"Model '{name}' is registered as {module_path}.{attribute}, "

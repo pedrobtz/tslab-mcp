@@ -127,6 +127,29 @@ def test_metric_values_are_rendered(manifest, fmt):
 
 
 @pytest.mark.parametrize("fmt", ["markdown", "html"])
+def test_structured_model_selection_is_rendered(manifest, fmt):
+    manifest["runs"].insert(
+        2,
+        {
+            "kind": "model_selection",
+            "at": "2026-08-18T12:00:30+00:00",
+            "proposed_model": "AutoETS",
+            "primary_metric": "mase",
+            "baseline_model": "SeasonalNaive",
+            "baseline_score": 1.0427,
+            "best_challenger_score": 0.3325,
+            "status": "validated_challenger",
+            "selected_model": "AutoETS",
+            "reason": "AutoETS has the lowest MASE.",
+        },
+    )
+    out = report.render(manifest, fmt)
+    assert "Model selection" in out
+    assert "validated_challenger" in out
+    assert "AutoETS has the lowest MASE" in out
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "html"])
 def test_artifact_paths_survive(manifest, fmt):
     out = report.render(manifest, fmt)
     assert "cv_deposits_a1.parquet" in out

@@ -40,6 +40,7 @@ class SeriesHandle:
     freq: str
     sha256: str
     loaded_at: str
+    integrity: dict[str, Any] = field(default_factory=dict)
     runs: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -105,7 +106,19 @@ def _validate_columns(df: pd.DataFrame, path: Path) -> None:
 
 def _coerce(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    missing_ids = df["unique_id"].isna()
+    if missing_ids.any():
+        raise ValueError(
+            f"Column 'unique_id' contains {int(missing_ids.sum())} missing "
+            "value(s). Every row must belong to a named series."
+        )
     df["unique_id"] = df["unique_id"].astype(str)
+    blank_ids = df["unique_id"].str.strip().eq("")
+    if blank_ids.any():
+        raise ValueError(
+            f"Column 'unique_id' contains {int(blank_ids.sum())} blank value(s). "
+            "Every row must belong to a named series."
+        )
     try:
         df["ds"] = pd.to_datetime(df["ds"])
     except (ValueError, TypeError) as exc:
@@ -113,7 +126,24 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
             f"Column 'ds' could not be parsed as timestamps ({exc}). "
             "Use an ISO-8601 date column, e.g. '2024-01-31'."
         ) from None
-    df["y"] = pd.to_numeric(df["y"], errors="coerce")
+    missing_ds = df["ds"].isna()
+    if missing_ds.any():
+        raise ValueError(
+            f"Column 'ds' contains {int(missing_ds.sum())} missing or invalid "
+            "timestamp(s). Use an ISO-8601 date for every row."
+        )
+
+    numeric_y = pd.to_numeric(df["y"], errors="coerce")
+    invalid_y = numeric_y.isna() | numeric_y.isin([float("inf"), float("-inf")])
+    if invalid_y.any():
+        examples = df.loc[invalid_y, "y"].head(5).tolist()
+        raise ValueError(
+            f"Column 'y' contains {int(invalid_y.sum())} missing, non-numeric, "
+            f"or non-finite value(s), for example {examples}. Clean or impute "
+            "the target explicitly before loading; this server never invents "
+            "target values."
+        )
+    df["y"] = numeric_y
     ordered: pd.DataFrame = df.sort_values(["unique_id", "ds"]).reset_index(drop=True)
     return ordered
 
@@ -155,6 +185,87 @@ def infer_frequency(df: pd.DataFrame) -> str:
     )
 
 
+def validate_frequency(freq: str) -> str:
+    """Validate an explicit pandas offset alias without changing its spelling."""
+    try:
+        offset = pd.tseries.frequencies.to_offset(freq)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"Invalid frequency '{freq}' ({exc}). Pass a pandas offset alias, "
+            f"e.g. {_EXAMPLE_ALIASES}."
+        ) from None
+    if offset is None:
+        raise ValueError(
+            f"Invalid frequency '{freq}'. Pass a pandas offset alias, "
+            f"e.g. {_EXAMPLE_ALIASES}."
+        )
+    return freq
+
+
+def inspect_gaps(df: pd.DataFrame, freq: str, max_series: int = 20) -> dict[str, Any]:
+    """Count missing and off-grid timestamps without modifying the panel.
+
+    Leading and trailing periods are not gaps because the panel does not assert
+    that every series must share a common start or end. A timestamp is off-grid
+    when it cannot occur on the supplied anchored frequency (for example the
+    15th of a month for ``MS``).
+    """
+    offset = pd.tseries.frequencies.to_offset(freq)
+    assert offset is not None  # validated by :func:`validate_frequency`
+
+    affected: list[dict[str, Any]] = []
+    total_missing = 0
+    total_off_grid = 0
+    for uid, group in df.groupby("unique_id", sort=True):
+        stamps = pd.DatetimeIndex(group["ds"])
+        expected = pd.date_range(stamps.min(), stamps.max(), freq=offset)
+        missing = expected.difference(stamps)
+        off_grid = stamps.difference(expected)
+        n_missing = len(missing)
+        n_off_grid = len(off_grid)
+        if not (n_missing or n_off_grid):
+            continue
+        total_missing += n_missing
+        total_off_grid += n_off_grid
+        affected.append(
+            {
+                "unique_id": str(uid),
+                "n_missing_timestamps": n_missing,
+                "n_off_grid_timestamps": n_off_grid,
+                "first_missing": missing[0].isoformat() if n_missing else None,
+                "first_off_grid": off_grid[0].isoformat() if n_off_grid else None,
+            }
+        )
+
+    shown = affected[:max_series]
+    return {
+        "is_regular": not affected,
+        "n_missing_timestamps": total_missing,
+        "n_off_grid_timestamps": total_off_grid,
+        "n_series_affected": len(affected),
+        "series": shown,
+        "truncated": len(shown) < len(affected),
+        "n_omitted": len(affected) - len(shown),
+    }
+
+
+def require_regular(series: SeriesHandle) -> None:
+    """Reject analysis of an irregular panel with a concrete remediation."""
+    integrity = series.integrity
+    if integrity.get("is_regular", True):
+        return
+    examples = [row["unique_id"] for row in integrity.get("series", [])[:5]]
+    raise ValueError(
+        f"Panel '{series.handle}' is irregular at frequency '{series.freq}': "
+        f"{integrity.get('n_missing_timestamps', 0)} missing and "
+        f"{integrity.get('n_off_grid_timestamps', 0)} off-grid timestamp(s) "
+        f"across {integrity.get('n_series_affected', 0)} series, including "
+        f"{examples}. Regularize the source explicitly, then call "
+        "tsf_load_series again. Automatic filling or imputation would add an "
+        "unaudited analytical assumption."
+    )
+
+
 def load_panel(
     path_str: str, freq: str | None = None, handle: str | None = None
 ) -> tuple[SeriesHandle, bool]:
@@ -176,7 +287,8 @@ def load_panel(
     df = _coerce(df)
     _check_duplicates(df)
 
-    resolved_freq = freq or infer_frequency(df)
+    resolved_freq = validate_frequency(freq) if freq else infer_frequency(df)
+    integrity = inspect_gaps(df, resolved_freq)
     name = handle or f"s{uuid.uuid4().hex[:6]}"
     replaced = name in _STORE
 
@@ -187,6 +299,7 @@ def load_panel(
         freq=resolved_freq,
         sha256=sha256_file(path),
         loaded_at=datetime.now(timezone.utc).isoformat(),
+        integrity=integrity,
     )
     put(series)
     return series, replaced
@@ -211,6 +324,7 @@ def summarize(series: SeriesHandle, replaced: bool = False) -> dict[str, Any]:
             "max": int(counts.max()),
         },
         "n_missing_y": int(df["y"].isna().sum()),
+        "integrity": series.integrity,
         "extra_columns": [c for c in df.columns if c not in REQUIRED_COLUMNS],
         "loaded_at": series.loaded_at,
         "replaced_existing_handle": replaced,

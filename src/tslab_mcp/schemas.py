@@ -79,7 +79,8 @@ class LoadSeriesInput(_Base):
         description=(
             "Pandas offset alias, e.g. 'MS' (month start), 'D', 'W-MON', 'h'. "
             "Inferred from the longest series when omitted; pass it explicitly "
-            "if inference failed or the panel has gaps."
+            "if inference failed. Gaps are reported but must be regularized in "
+            "the source before analysis; the server never fills them silently."
         ),
         max_length=16,
     )
@@ -204,6 +205,45 @@ class CrossValidateInput(_Base):
         return seen
 
 
+class SelectModelInput(_Base):
+    handle: str = Field(
+        ..., description="Handle whose latest cross-validation run to evaluate.",
+        min_length=1,
+    )
+    proposed_model: str = Field(
+        ...,
+        description=(
+            "Model chosen by the agent from the latest CV evidence. The tool "
+            "accepts it only when it is tied for the best qualifying score."
+        ),
+        min_length=1,
+    )
+    primary_metric: Metric = Field(
+        default=Metric.MASE,
+        description=(
+            "Cross-validation metric used for selection. MASE is the default "
+            "agent policy; every supported metric is lower-is-better."
+        ),
+    )
+    min_relative_improvement: float = Field(
+        default=0.0,
+        description=(
+            "Minimum fractional improvement over SeasonalNaive required for a "
+            "challenger, e.g. 0.05 requires at least 5%. Leave at 0 to accept "
+            "any strictly lower score."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    finalize_baseline: bool = Field(
+        default=False,
+        description=(
+            "When no challenger qualifies, false requests one broader CV "
+            "comparison; true validates SeasonalNaive as the final fallback."
+        ),
+    )
+
+
 class ForecastInput(_Base):
     handle: str = Field(
         ..., description="Handle returned by tsf_load_series.", min_length=1
@@ -211,8 +251,9 @@ class ForecastInput(_Base):
     models: list[str] = Field(
         ...,
         description=(
-            "Model names to fit. Pass the winner of tsf_cross_validate; pass "
-            "several to compare their paths side by side."
+            "Model names to fit. Normally pass the single selected_model "
+            "validated by tsf_select_model; multiple or different models "
+            "require an explicit selection override after a checkpoint."
         ),
         min_length=1,
         max_length=12,
@@ -234,6 +275,14 @@ class ForecastInput(_Base):
         ),
         ge=0,
         le=100,
+    )
+    allow_selection_override: bool = Field(
+        default=False,
+        description=(
+            "Allow models that differ from the latest validated selection. "
+            "Use only for an explicit user-requested override; otherwise the "
+            "structured selection checkpoint is enforced."
+        ),
     )
 
     @field_validator("models")
@@ -274,9 +323,10 @@ class DetectAnomaliesInput(_Base):
     n_windows: int | None = Field(
         default=None,
         description=(
-            "Rolling-origin windows to test. Defaults to the maximum the "
-            "shortest series allows, which refits the model once per "
-            "observation and is SLOW -- set this (e.g. 12) to bound the cost."
+            "Rolling-origin windows to test. Defaults to the maximum that "
+            "preserves enough training and interval-calibration history for "
+            "the chosen model. This can still be SLOW -- set this (e.g. 12) "
+            "to bound the cost."
         ),
         ge=1,
         le=500,
@@ -295,6 +345,14 @@ class DetectAnomaliesInput(_Base):
         description="Cap on flagged rows inlined in the response.",
         ge=0,
         le=500,
+    )
+    allow_selection_override: bool = Field(
+        default=False,
+        description=(
+            "Allow a detector that differs from the latest validated model. "
+            "Use only for an explicit user-directed override; complete analyses "
+            "use the forecast selection for a consistent expectation model."
+        ),
     )
 
 

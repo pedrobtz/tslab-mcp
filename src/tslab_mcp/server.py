@@ -29,7 +29,9 @@ from . import (
     models,
     registry,
     report,
+    selection,
 )
+from .agent_instructions import AGENT_INSTRUCTIONS
 from .schemas import (
     CrossValidateInput,
     DescribeSeriesInput,
@@ -41,25 +43,18 @@ from .schemas import (
     LoadSeriesInput,
     ReportFormat,
     ResponseFormat,
+    SelectModelInput,
 )
 
 mcp = MCPServer(
     name="tslab-mcp",
     version=__version__,
-    instructions=(
-        "Deterministic time-series forecasting. You are the reasoning engine: "
-        "these tools compute numbers, you interpret them. The workflow is "
-        "tsf_load_series -> tsf_describe_series -> tsf_list_models -> "
-        "tsf_cross_validate -> tsf_forecast -> tsf_export_run. Panels stay in "
-        "the server behind a handle; bulk results are written to parquet and "
-        "only summarised in the response, so read the artifact path rather "
-        "than asking for more rows."
-    ),
+    instructions=AGENT_INSTRUCTIONS,
 )
 
+
 def _read_only(title: str) -> ToolAnnotations:
-    """Annotations for a tool that computes and writes artifacts but mutates
-    no state the caller can observe through this server."""
+    """Annotations for a closed-domain tool with no side effects."""
     return ToolAnnotations(
         title=title,
         read_only_hint=True,
@@ -68,14 +63,25 @@ def _read_only(title: str) -> ToolAnnotations:
         open_world_hint=False,
     )
 
-#: TimeCopilot names the flag column per model, as ``"{alias}-anomaly"``. The
-#: alias is usually the model name but need not be, so the column is located by
-#: suffix rather than assembled from the requested name.
+
+def _write(
+    title: str, *, destructive: bool = False, open_world: bool = False
+) -> ToolAnnotations:
+    """Truthful annotations for stateful or artifact-producing tools."""
+    return ToolAnnotations(
+        title=title,
+        read_only_hint=False,
+        destructive_hint=destructive,
+        idempotent_hint=False,
+        open_world_hint=open_world,
+    )
+
+#: Anomaly output uses the same canonical public alias enforced for predictions.
 _ANOMALY_SUFFIX = "-anomaly"
 
 
 def _dumps(payload: Any) -> str:
-    return json.dumps(payload, indent=2, default=str)
+    return json.dumps(payload, indent=2, default=str, allow_nan=False)
 
 
 def _preview(df: pd.DataFrame, limit: int) -> list[dict[str, Any]]:
@@ -89,15 +95,18 @@ def _preview(df: pd.DataFrame, limit: int) -> list[dict[str, Any]]:
     return rows
 
 
-@mcp.tool(name="tsf_load_series", annotations=_read_only("Load a time series panel"))
+@mcp.tool(
+    name="tsf_load_series",
+    annotations=_write("Load a time series panel", destructive=True),
+)
 async def tsf_load_series(params: LoadSeriesInput) -> str:
     """Read a CSV or Parquet panel from disk and register it under a handle.
 
     Call this first; every other tool takes the handle it returns. The file must
     be in Nixtla long format (unique_id, ds, y). Returns a compact JSON summary
-    -- series count, inferred frequency, date range, missing values, and the
-    SHA-256 of the source -- and nothing else: the data stays in the server so
-    it never consumes your context.
+    -- series count, inferred frequency, date range, missing/off-grid timestamps,
+    target integrity, and the SHA-256 of the source -- and nothing else: the data
+    stays in the server so it never consumes your context.
 
     Read the summary before choosing a horizon. If obs_per_series.min is small,
     a long horizon or many CV windows will not fit.
@@ -112,7 +121,7 @@ async def tsf_load_series(params: LoadSeriesInput) -> str:
 
 @mcp.tool(
     name="tsf_describe_series",
-    annotations=_read_only("Statistical features of a loaded panel"),
+    annotations=_write("Statistical features of a loaded panel"),
 )
 async def tsf_describe_series(params: DescribeSeriesInput) -> str:
     """Compute the per-series features that decide which model family to try.
@@ -129,6 +138,7 @@ async def tsf_describe_series(params: DescribeSeriesInput) -> str:
 
     def _run() -> str:
         series = registry.get(params.handle)
+        registry.require_regular(series)
         period = features.seasonal_period(series.freq)
         rows = features.panel_features(series.df, period)
         shown = rows[: params.max_series]
@@ -223,14 +233,15 @@ async def tsf_list_models(params: ListModelsInput) -> str:
 
 @mcp.tool(
     name="tsf_cross_validate",
-    annotations=_read_only("Rolling-origin model comparison"),
+    annotations=_write("Rolling-origin model comparison", open_world=True),
 )
 async def tsf_cross_validate(params: CrossValidateInput) -> str:
     """Compare models by rolling-origin cross-validation.
 
     This is the tool that replaces guesswork about model choice: it produces the
-    evidence, you read the table and decide. Always include SeasonalNaive as the
-    baseline -- a model that cannot beat it is not worth deploying.
+    evidence, you read the table and propose a winner to tsf_select_model.
+    Always include SeasonalNaive as the baseline -- a model that cannot beat it
+    is not worth deploying.
 
     Returns a per-model metric table aggregated over series and windows, a
     best-first ranking per metric, and the parquet path holding every per-window
@@ -244,7 +255,17 @@ async def tsf_cross_validate(params: CrossValidateInput) -> str:
         names = list(params.models)
         metric_names = [metric.value for metric in params.metrics]
 
+        registry.require_regular(series)
         models.validate_names(names)
+        backends.validate_history(
+            series.df,
+            names,
+            series.freq,
+            params.h,
+            operation="cross-validation",
+            n_windows=params.n_windows,
+            step_size=params.step_size,
+        )
         backend = backends.select(names)
         cv_df = backend.cross_validation(
             df=series.df,
@@ -252,6 +273,12 @@ async def tsf_cross_validate(params: CrossValidateInput) -> str:
             freq=series.freq,
             n_windows=params.n_windows,
             step_size=params.step_size,
+        )
+        backends.validate_prediction_frame(
+            cv_df,
+            names,
+            "Cross-validation",
+            required_columns=("unique_id", "ds", "cutoff", "y"),
         )
         path = artifacts.write_parquet(cv_df, "cv", series.handle)
         scores = evaluation.evaluate_cv(
@@ -276,15 +303,55 @@ async def tsf_cross_validate(params: CrossValidateInput) -> str:
     return await anyio.to_thread.run_sync(_run)
 
 
-@mcp.tool(name="tsf_forecast", annotations=_read_only("Generate a forecast"))
+@mcp.tool(
+    name="tsf_select_model",
+    annotations=_write("Validate a model selection against CV evidence"),
+)
+async def tsf_select_model(params: SelectModelInput) -> str:
+    """Validate the agent's proposed model against the latest CV run.
+
+    This is the deterministic checkpoint between comparison and forecasting.
+    It verifies finite scores, requires SeasonalNaive, checks that the proposal
+    is tied for the lowest primary metric, and applies the requested minimum
+    relative improvement. A failed first comparison requests one broader CV
+    round; when no justified candidates remain, call again with
+    proposed_model='SeasonalNaive' and finalize_baseline=true.
+
+    Do not forecast until this returns selected_model with status
+    'validated_challenger' or 'baseline_fallback'. Every attempt is recorded in
+    the handle's run log and therefore survives into the manifest.
+    """
+
+    def _run() -> str:
+        series = registry.get(params.handle)
+        _, cv_run = selection.latest_cross_validation(series.runs)
+        decision = selection.evaluate_proposal(
+            cv_run,
+            proposed_model=params.proposed_model,
+            metric=params.primary_metric.value,
+            min_relative_improvement=params.min_relative_improvement,
+            finalize_baseline=params.finalize_baseline,
+        )
+        entry = manifest.record("model_selection", **decision)
+        series.runs.append(entry)
+        return _dumps(entry)
+
+    return await anyio.to_thread.run_sync(_run)
+
+
+@mcp.tool(
+    name="tsf_forecast",
+    annotations=_write("Generate a forecast", open_world=True),
+)
 async def tsf_forecast(params: ForecastInput) -> str:
     """Fit on the full history and forecast h periods ahead with intervals.
 
-    Use after tsf_cross_validate has justified the model choice. The full
-    forecast goes to parquet; the response carries the path, the column list,
-    the row count and a small preview. Read the parquet for anything more --
-    raising max_preview_rows to dump the frame into the conversation is the one
-    thing that reliably ruins a long session.
+    Use after tsf_select_model has validated the model choice, unless the user
+    explicitly requested a fixed-model forecast. The full forecast goes to
+    parquet; the response carries the path, the column list, the row count and
+    a small preview. Read the parquet for anything more -- raising
+    max_preview_rows to dump the frame into the conversation is the one thing
+    that reliably ruins a long session.
 
     LONG-RUNNING for foundation models.
     """
@@ -293,11 +360,24 @@ async def tsf_forecast(params: ForecastInput) -> str:
         series = registry.get(params.handle)
         names = list(params.models)
 
+        registry.require_regular(series)
         models.validate_names(names)
+        validated_selection = selection.require_forecast_matches_selection(
+            series.runs, names, params.allow_selection_override
+        )
+        backends.validate_history(
+            series.df,
+            names,
+            series.freq,
+            params.h,
+            operation="forecast",
+            with_intervals=bool(params.level),
+        )
         backend = backends.select(names)
         forecast_df = backend.forecast(
             df=series.df, h=params.h, freq=series.freq, level=params.level
         )
+        backends.validate_forecast_frame(forecast_df, names, params.level)
         path = artifacts.write_parquet(forecast_df, "fcst", series.handle)
 
         first_id = forecast_df["unique_id"].iloc[0]
@@ -310,6 +390,11 @@ async def tsf_forecast(params: ForecastInput) -> str:
             backend=backend.name,
             h=params.h,
             level=params.level,
+            prediction_intervals=backends.prediction_interval_configuration(
+                backend.name, names, params.h, params.level
+            ),
+            validated_selection=validated_selection,
+            selection_override=params.allow_selection_override,
             artifact=str(path),
             n_rows=len(forecast_df),
             columns=list(forecast_df.columns),
@@ -325,7 +410,9 @@ async def tsf_forecast(params: ForecastInput) -> str:
 
 @mcp.tool(
     name="tsf_detect_anomalies",
-    annotations=_read_only("Detect anomalies via cross-validated intervals"),
+    annotations=_write(
+        "Detect anomalies via cross-validated intervals", open_world=True
+    ),
 )
 async def tsf_detect_anomalies(params: DetectAnomaliesInput) -> str:
     """Flag historical points that fall outside a cross-validated prediction
@@ -339,38 +426,51 @@ async def tsf_detect_anomalies(params: DetectAnomaliesInput) -> str:
     parquet path with the full result.
 
     LONG-RUNNING, and the default is the expensive one: leaving n_windows unset
-    refits the model once per observation across the whole history, which takes
-    minutes even for a statistical model. Pass n_windows (e.g. 12) unless you
-    genuinely need every point tested.
+    uses the maximum number that still preserves the model's required fitting
+    and interval-calibration history. This can take minutes even for a
+    statistical model. Pass n_windows (e.g. 12) unless you genuinely need the
+    broadest historical coverage.
     """
 
     def _run() -> str:
         series = registry.get(params.handle)
 
+        registry.require_regular(series)
         models.validate_names([params.model])
+        validated_selection = selection.require_forecast_matches_selection(
+            series.runs, [params.model], params.allow_selection_override
+        )
+        n_windows = backends.resolve_anomaly_windows(
+            series.df,
+            [params.model],
+            series.freq,
+            params.h,
+            params.n_windows,
+        )
+        backends.validate_history(
+            series.df,
+            [params.model],
+            series.freq,
+            params.h,
+            operation="anomaly detection",
+            n_windows=n_windows,
+            step_size=params.h,
+            with_intervals=True,
+        )
         backend = backends.select([params.model])
         result = backend.detect_anomalies(
             df=series.df,
             h=params.h,
             freq=series.freq,
-            n_windows=params.n_windows,
+            n_windows=n_windows,
             level=params.level,
         )
+        expected_flag = f"{params.model}{_ANOMALY_SUFFIX}"
+        backends.validate_anomaly_frame(result, params.model, params.level)
         path = artifacts.write_parquet(result, "anom", series.handle)
 
-        columns = [c for c in result.columns if c.endswith(_ANOMALY_SUFFIX)]
-        if columns:
-            flag_column: str | None = columns[0]
-            flagged = result[result[columns[0]].fillna(False).astype(bool)]
-            note = None
-        else:
-            flag_column = None
-            flagged = result.iloc[0:0]
-            note = (
-                f"No '*{_ANOMALY_SUFFIX}' column in the result; columns are "
-                f"{list(result.columns)}. Counts are unavailable -- read the "
-                "parquet artifact directly."
-            )
+        flag_column = expected_flag
+        flagged = result[result[flag_column].fillna(False).astype(bool)]
 
         per_series = {
             str(uid): int(count)
@@ -381,8 +481,14 @@ async def tsf_detect_anomalies(params: DetectAnomaliesInput) -> str:
             model=params.model,
             backend=backend.name,
             h=params.h,
-            n_windows=params.n_windows,
+            n_windows=n_windows,
+            n_windows_requested=params.n_windows,
             level=params.level,
+            prediction_intervals=backends.prediction_interval_configuration(
+                backend.name, [params.model], params.h, [params.level]
+            ),
+            validated_selection=validated_selection,
+            selection_override=params.allow_selection_override,
             flag_column=flag_column,
             artifact=str(path),
             n_rows_tested=len(result),
@@ -390,7 +496,6 @@ async def tsf_detect_anomalies(params: DetectAnomaliesInput) -> str:
             per_series=per_series,
             flagged=_preview(flagged, params.max_flagged),
             truncated=len(flagged) > params.max_flagged,
-            note=note,
         )
         series.runs.append(entry)
         return _dumps(entry)
@@ -400,13 +505,7 @@ async def tsf_detect_anomalies(params: DetectAnomaliesInput) -> str:
 
 @mcp.tool(
     name="tsf_export_run",
-    annotations=ToolAnnotations(
-        title="Export a pinned, re-runnable manifest",
-        read_only_hint=False,
-        destructive_hint=False,
-        idempotent_hint=False,
-        open_world_hint=False,
-    ),
+    annotations=_write("Export a pinned, re-runnable manifest"),
 )
 async def tsf_export_run(params: ExportRunInput) -> str:
     """Write a JSON manifest of everything done to this handle.
@@ -439,13 +538,7 @@ async def tsf_export_run(params: ExportRunInput) -> str:
 
 @mcp.tool(
     name="tsf_export_report",
-    annotations=ToolAnnotations(
-        title="Export a readable report of the whole run",
-        read_only_hint=False,
-        destructive_hint=False,
-        idempotent_hint=False,
-        open_world_hint=False,
-    ),
+    annotations=_write("Export a readable report of the whole run"),
 )
 async def tsf_export_report(params: ExportReportInput) -> str:
     """Render every step of the analysis as a report someone can read.

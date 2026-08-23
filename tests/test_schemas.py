@@ -19,6 +19,7 @@ from tslab_mcp.schemas import (
     LoadSeriesInput,
     Metric,
     ResponseFormat,
+    SelectModelInput,
 )
 
 ALL_INPUTS = [
@@ -26,6 +27,7 @@ ALL_INPUTS = [
     DescribeSeriesInput,
     ListModelsInput,
     CrossValidateInput,
+    SelectModelInput,
     ForecastInput,
     DetectAnomaliesInput,
     ExportRunInput,
@@ -118,6 +120,23 @@ def test_cross_validate_defaults():
     assert params.n_windows == 5
     assert params.step_size is None
     assert params.metrics == [Metric.MASE, Metric.SMAPE]
+
+
+def test_select_model_defaults_to_mase_and_requires_a_proposal():
+    params = SelectModelInput(handle="h", proposed_model="AutoETS")
+    assert params.primary_metric is Metric.MASE
+    assert params.min_relative_improvement == 0.0
+    assert params.finalize_baseline is False
+    with pytest.raises(ValidationError):
+        SelectModelInput(handle="h")
+
+
+@pytest.mark.parametrize("value", [-0.01, 1.01])
+def test_selection_improvement_threshold_is_bounded(value):
+    with pytest.raises(ValidationError):
+        SelectModelInput(
+            handle="h", proposed_model="AutoETS", min_relative_improvement=value
+        )
 
 
 @pytest.mark.parametrize("value", [0, 51])

@@ -103,3 +103,9 @@ def test_anomaly_output_shape_agrees(panel, backends):
     assert flag in b.columns, list(b.columns)
     assert a[flag].dtype == bool
     assert len(a) == len(b)
+
+
+def test_timecopilot_preserves_auto_ces_public_alias(panel):
+    result = TimeCopilotBackend(["AutoCES"]).forecast(panel, H, FREQ, None)
+    assert "AutoCES" in result.columns
+    assert "CES" not in result.columns

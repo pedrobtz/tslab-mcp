@@ -37,9 +37,18 @@ commit to a model.
 
 Requires Python 3.10+ (3.13 recommended, see [Python version](#python-version)).
 
+Until the first package release, run the current GitHub revision directly:
+
 ```bash
-uvx tslab-mcp                     # run without installing
-uv tool install tslab-mcp         # or install the CLI
+uvx --from git+https://github.com/pedrobtz/tslab-mcp tslab-mcp
+uv tool install git+https://github.com/pedrobtz/tslab-mcp
+```
+
+After `0.1.0` is published, the shorter PyPI commands will work:
+
+```bash
+uvx tslab-mcp
+uv tool install tslab-mcp
 ```
 
 The base install runs the eleven statistical models through
@@ -48,13 +57,16 @@ PyTorch, and it starts instantly. For the pretrained foundation models — Chron
 Moirai, TimesFM, Toto, TiRex — and Prophet, add the extra:
 
 ```bash
-uvx --from 'tslab-mcp[foundation]' tslab-mcp
+uvx --from 'tslab-mcp[foundation] @ git+https://github.com/pedrobtz/tslab-mcp' tslab-mcp
 ```
 
 > The `foundation` extra pulls TimeCopilot, which brings torch, transformers and
 > lightning: roughly 2 GB on first install, and the first tool call that touches
 > it spends ~30 seconds importing. Both are one-off, and neither is paid unless
-> you ask for a model that needs them.
+> you ask for a model that needs them. The base install works on Intel Macs, but
+> the foundation extra does not: TimeCopilot currently requires a PyTorch release
+> for which PyTorch publishes no macOS x86_64 wheel. Use Apple silicon, Linux, or
+> Windows for foundation models.
 
 ### From GitHub
 
@@ -97,7 +109,7 @@ often `.mcp.json` in the project root — but the entry itself is the same shape
   "mcpServers": {
     "tslab": {
       "command": "uvx",
-      "args": ["tslab-mcp"],
+      "args": ["--from", "git+https://github.com/pedrobtz/tslab-mcp", "tslab-mcp"],
       "env": {
         "TSLAB_MCP_HOME": "~/.tslab-mcp"
       }
@@ -119,6 +131,15 @@ Nixtla API calls `TimeGPT` makes if you ask for it specifically.
 Copilot discovers MCP servers from an `mcp.json` file and exposes their tools in
 **agent mode** — the tools do not appear in ask or edit mode.
 
+This repository now includes a ready-made
+[`TSLab Forecaster` custom agent](.github/agents/tslab-forecaster.agent.md) and
+portable [VS Code MCP configuration](.vscode/mcp.json). For the shortest setup,
+follow the [GitHub Copilot quickstart](docs/github-copilot.md); it finishes with
+an end-to-end AirPassengers verification prompt. The custom agent is deliberately
+scoped to read/search tools and `tslab/*`. To add the same integration to a
+different repository, copy the ready-made
+[`integrations/github-copilot` bundle](integrations/github-copilot/README.md).
+
 **VS Code.** Put the server in `.vscode/mcp.json` to share it with the repo, or
 run **MCP: Open User Configuration** from the Command Palette to keep it in your
 own profile across every workspace. Note the key is `servers`, not `mcpServers`:
@@ -129,7 +150,7 @@ own profile across every workspace. Note the key is `servers`, not `mcpServers`:
     "tslab": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["tslab-mcp"],
+      "args": ["--from", "git+https://github.com/pedrobtz/tslab-mcp", "tslab-mcp"],
       "env": {
         "TSLAB_MCP_HOME": "${userHome}/.tslab-mcp"
       }
@@ -153,10 +174,10 @@ From a checkout, point it at the working tree instead:
 ```
 
 Then: open Chat, switch the mode selector to **Agent**, and use the **Tools**
-button to confirm the eight `tsf_*` tools are listed and enabled. `MCP: List
+button to confirm the nine `tsf_*` tools are listed and enabled. `MCP: List
 Servers` shows the server's status and its logs, which is where a failed start
 is explained. Copilot caps how many tools can be active at once, so if you run
-several MCP servers you may need to deselect some to fit all eight.
+several MCP servers you may need to deselect some to fit all nine.
 
 **Visual Studio.** Same JSON shape, in `.mcp.json` at the solution root (or
 `%USERPROFILE%\.mcp.json` for all solutions), then enable the tools from the
@@ -175,22 +196,61 @@ choose **Edit MCP configuration**, and add the same `servers` entry to the
 
 | Tool | Purpose | Returns |
 |---|---|---|
-| `tsf_load_series` | Read CSV/Parquet, validate the `unique_id`/`ds`/`y` contract, infer frequency, register a handle | JSON summary + SHA-256 |
+| `tsf_load_series` | Read CSV/Parquet, validate values and frequency, report gaps, register a handle | JSON summary + SHA-256 |
 | `tsf_describe_series` | Per-series features for choosing a model family | Markdown table or JSON, row-capped |
 | `tsf_list_models` | Probe which models actually import here | `{available, statistical, foundation, unavailable}` |
 | `tsf_cross_validate` | Rolling-origin comparison across models | Metric table, ranking, parquet path |
+| `tsf_select_model` | Validate the agent's proposal against CV evidence and SeasonalNaive | Structured decision or retry/fallback instruction |
 | `tsf_forecast` | Fit and forecast with prediction intervals | Parquet path + bounded preview |
 | `tsf_detect_anomalies` | Cross-validated interval flagging | Counts, capped flag list, parquet path |
 | `tsf_export_run` | Pin the session to a re-runnable manifest | Manifest path |
 | `tsf_export_report` | Render every step as a readable report | HTML or Markdown path |
 
-Everything except the two `tsf_export_*` tools is marked read-only; nothing here
-deletes, so cleaning up `~/.tslab-mcp/runs` is your business, not the agent's.
+The annotations follow actual side effects: only `tsf_list_models` is read-only.
+Loading mutates the handle registry, describing appends evidence to the run log,
+and the compute/export tools create additive artifacts. Loading is marked
+potentially destructive because deliberately reusing a handle replaces its old
+in-memory panel and run log. Forecasting, CV, and anomaly detection are
+conservatively open-world because a foundation model may download weights and
+TimeGPT calls an API. Nothing deletes filesystem artifacts, so cleaning up
+`~/.tslab-mcp/runs` remains your responsibility.
+
+### Data integrity and prediction intervals
+
+Loading rejects missing/blank IDs, missing or invalid timestamps, non-numeric or
+non-finite targets, duplicate keys, and invalid explicit frequency aliases. It
+also compares every series with the declared frequency and reports missing and
+off-grid timestamps under `integrity`. An irregular panel can be loaded so you
+can inspect that diagnosis, but describe/CV/forecast/anomaly calls stop with an
+actionable error until the source is regularized. The server never fills or
+imputes observations silently.
+
+Before fitting, statistical-model requests check that every series has enough
+history for the horizon, rolling windows, model-specific minimum, seasonality,
+and interval calibration. Backend results must contain canonical model columns
+and finite values before an artifact or successful run record is written.
+
+StatsForecast models with native intervals use them. `ADIDA`, `IMAPA`, and
+`CrostonClassic` have no native intervals, so the base backend supplies
+deterministic conformal-distribution intervals using two calibration windows.
+That configuration is recorded in forecast and anomaly run entries.
 
 ## Starting a session
 
-The tools do not enforce an order, so the opening prompt is what turns eight
-callable functions into an analysis. Something like this works well:
+The server sends every MCP client a canonical
+[`agent_workflow.md`](src/tslab_mcp/agent_workflow.md) instruction contract. For
+end-to-end analysis it directs the external agent through the same core loop as
+an embedded forecasting agent: feature analysis, feature-informed candidate
+selection, rolling cross-validation against SeasonalNaive, evidence-based model
+selection, forecasting, anomaly detection, and a reproducible manifest/report.
+Explicitly narrower user requests still take precedence, so asking only to load
+or describe data does not trigger an unsolicited full analysis.
+
+The complete sequence is agent-directed, but the selection checkpoint is
+enforced: once `tsf_select_model` validates a winner, `tsf_forecast` rejects a
+different model unless the caller marks an explicit override. An opening prompt
+still establishes the user's scope and turns the nine callable functions into
+an analysis. Something like this works well:
 
 > Use the tslab tools to forecast the series in
 > `/Users/me/data/deposits.csv`, 12 months ahead.
@@ -203,8 +263,10 @@ callable functions into an analysis. Something like this works well:
 > 3. Check which models are actually installed before proposing any.
 > 4. Cross-validate your shortlist against a SeasonalNaive baseline over 4
 >    windows. Statistical models only for now.
-> 5. Forecast with the winner, with 80% and 95% intervals.
-> 6. Export a run manifest and an HTML report, and put the model-selection
+> 5. Propose the lowest-MASE model and validate it with `tsf_select_model`. If
+>    nothing beats the baseline, follow its retry/fallback result.
+> 6. Forecast with the validated model, with 80% and 95% intervals.
+> 7. Export a run manifest and an HTML report, and put the model-selection
 >    rationale in the note: what you chose, what the metric table showed, and
 >    what you rejected.
 >
@@ -242,6 +304,9 @@ anything else — that pause is expected, not a hang, and it only happens if the
 
 ## A worked session
 
+For a complete copy-paste chat walkthrough using the classic AirPassengers
+dataset, see [`examples/air-passengers-chat.md`](examples/air-passengers-chat.md).
+
 Start from a CSV in Nixtla long format:
 
 ```csv
@@ -258,7 +323,10 @@ session carries.
 {"handle": "deposits", "n_series": 12, "n_obs": 864, "freq": "MS",
  "start": "2018-01-01T00:00:00", "end": "2023-12-01T00:00:00",
  "obs_per_series": {"min": 72, "median": 72, "max": 72},
- "n_missing_y": 0, "sha256": "9f2c…"}
+ "n_missing_y": 0,
+ "integrity": {"is_regular": true, "n_missing_timestamps": 0,
+               "n_off_grid_timestamps": 0, "n_series_affected": 0},
+ "sha256": "9f2c…"}
 ```
 
 **2. Describe it.** These are the numbers you reason over.
@@ -292,15 +360,28 @@ model that cannot beat it is not worth deploying:
  "artifact": "~/.tslab-mcp/runs/cv_deposits_3f1a9c02.parquet"}
 ```
 
-**5. Forecast** with the winner. The full frame goes to parquet; the response
-carries the path, the columns, and a short preview.
+**5. Validate the proposed winner** with `tsf_select_model`. The tool verifies
+the proposal against the latest metric table and records the checkpoint:
 
-**6. Export the run and the report.** Write down *why*, in the note — it is the
+```json
+{"kind": "model_selection", "proposed_model": "AutoARIMA",
+ "primary_metric": "mase", "baseline_score": 1.0,
+ "best_challenger_score": 0.68, "status": "validated_challenger",
+ "selected_model": "AutoARIMA", "requires_additional_comparison": false}
+```
+
+If no challenger qualifies, it requests one broader comparison or validates
+`SeasonalNaive` as an explicit final fallback.
+
+**6. Forecast** with the validated winner. The full frame goes to parquet; the
+response carries the path, the columns, and a short preview.
+
+**7. Export the run and the report.** Write down *why*, in the note — it is the
 only part of your reasoning that outlives the conversation:
 
 ```json
-{"manifest": "~/.tslab-mcp/runs/manifest_deposits_77b0e415.json", "n_runs": 3,
- "kinds": ["cross_validation", "forecast"]}
+{"manifest": "~/.tslab-mcp/runs/manifest_deposits_77b0e415.json", "n_runs": 4,
+ "kinds": ["cross_validation", "features", "forecast", "model_selection"]}
 ```
 
 The manifest holds the source path and hash, the frequency, every call with its
@@ -315,8 +396,8 @@ environment, in the order they happened:
 
 ```json
 {"report": "~/.tslab-mcp/runs/report_deposits_5c31d0a7.html",
- "format": "html", "n_steps": 3,
- "steps": ["features", "cross_validation", "forecast"]}
+ "format": "html", "n_steps": 4,
+ "steps": ["features", "cross_validation", "model_selection", "forecast"]}
 ```
 
 The report is a *pure function of the manifest*: it reads no parquet and calls
@@ -369,7 +450,10 @@ it pins `tabpfn-time-series`, which caps pandas below 2.2.
 | 3.10–3.12 | adds `TabPFN`, `Sundial` | < 2.2 |
 
 3.13 is the recommended target. Either way, `tsf_list_models` reports what
-actually resolved, with the reason for anything that did not.
+actually resolved, with the reason for anything that did not. This table assumes
+a platform supported by TimeCopilot's PyTorch dependency; the foundation extra
+is unavailable on macOS x86_64, while the statistical base install remains
+supported there.
 
 ## Development
 

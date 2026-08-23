@@ -45,7 +45,7 @@ def environment() -> dict[str, str]:
     versions: dict[str, str] = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
-        "tslab_mcp": __version__,
+        "tslab_mcp_module": __version__,
     }
     for package in PINNED_PACKAGES:
         try:
@@ -79,6 +79,7 @@ def build(series: SeriesHandle, note: str | None = None) -> dict[str, Any]:
             "loaded_at": series.loaded_at,
             "n_series": series.n_series,
             "n_obs": series.n_obs,
+            "integrity": series.integrity,
         },
         "runs": series.runs,
         "environment": environment(),

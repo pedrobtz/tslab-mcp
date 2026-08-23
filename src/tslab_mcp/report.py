@@ -25,6 +25,7 @@ EMPTY = "—"
 _KIND_TITLES = {
     "features": "Features",
     "cross_validation": "Cross-validation",
+    "model_selection": "Model selection",
     "forecast": "Forecast",
     "anomalies": "Anomaly detection",
 }

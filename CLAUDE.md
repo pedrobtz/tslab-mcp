@@ -117,13 +117,32 @@ looking snippet.
 - **The MCP SDK is `mcp` 2.0.** `mcp.server.fastmcp.FastMCP` does not exist. Use
   `MCPServer` from `mcp.server`. `ToolAnnotations` fields are **snake_case**
   (`read_only_hint`), `list_tools()` is async, and `CallToolResult.is_error`
-  replaced `isError`.
+  replaced `isError`. The package floor must stay `mcp>=2.0.0`; the v1 line
+  satisfies a looser lower bound but cannot import this server.
+- **Annotations describe side effects, not whether an operation feels like a
+  query.** Loading mutates the registry, describing appends a run record, and
+  compute tools write artifacts. Only `tsf_list_models` is read-only. CV,
+  forecast, and anomalies stay conservatively open-world because TimeGPT and
+  model-weight downloads are reachable through those tool surfaces.
+- **`agent_workflow.md` is the external agent contract.** It is packaged with
+  the wheel and loaded verbatim into `MCPServer.instructions`; edit that file,
+  not a duplicate prompt in `server.py`. Full analyses follow the feature → CV
+  → validated selection → forecast → anomaly loop, while explicit narrow
+  requests take precedence. `selection.py` owns the numerical checkpoint;
+  prompts must never duplicate or weaken that policy.
 - **`utilsforecast.evaluate` returns a `cutoff` column.** Aggregate over model
   columns explicitly — `.drop(columns=["unique_id"]).groupby("metric").mean()`
   tries to average a timestamp. Covered by
   `test_cutoff_column_is_not_averaged`.
 - **Anomaly flags are per-model columns named `"{alias}-anomaly"`**, not a
-  single `anomaly` column. Locate by suffix.
+  single `anomaly` column. Every backend model is instantiated with its public
+  registry name as the alias, and the output validator requires that canonical
+  column. `AutoCES` otherwise silently calls itself `CES` and disappears from
+  metric tables.
+- **ADIDA, IMAPA and CrostonClassic need conformal intervals.** They raise on
+  any non-empty `level` unless constructed with `ConformalIntervals`. The
+  statsforecast backend uses two `conformal_distribution` windows at the
+  requested horizon and writes that configuration into the run record.
 - **Seasonality is deliberately computed two ways.** `seasonality.py`
   reimplements the gluonts/M4 convention (`D → 1`, `W → 1`) and is used for both
   a model's `season_length` and MASE, so the two backends agree and no install
@@ -141,11 +160,22 @@ looking snippet.
   wire from a private CLOEXEC duplicate of fd 1 and points fd 1 at stderr, so
   stray prints from the forecasting stack and its worker processes cannot
   corrupt the JSON-RPC framing.
-- **`detect_anomalies` defaults `n_windows` to the maximum**, refitting once per
-  observation. Always pass it.
+- **`detect_anomalies` defaults `n_windows` to the safe maximum**, reserving
+  the verified per-model minimum history plus any seasonal or conformal
+  calibration requirement. It can still refit dozens or hundreds of times, so
+  normally pass it.
+- **Irregular panels are diagnostic-only.** Loading reports missing and
+  off-grid timestamps, but every analytical tool calls `require_regular`.
+  Never add automatic filling or imputation: that is an analytical decision
+  the manifest cannot justify on the caller's behalf.
+- **No non-finite backend output is a successful run.** Validate canonical
+  point and interval columns before writing parquet or appending a run record.
 
 ## Dependency constraints
 
+- `statsforecast>=2.1.1` is intentional. The interval/alias contract is verified
+  against 2.1.1, and allowing 2.0.x on Python 3.13 can resolve to an old
+  numba/llvmlite stack with no usable wheel.
 - `pandas` floor is `>=2.1.2`, not 2.2. On Python < 3.13 TimeCopilot pins
   `tabpfn-time-series`, which caps `pandas<2.2.0`; requiring 2.2 makes the
   project unresolvable on 3.10–3.12. The seasonal-period table therefore accepts
@@ -154,5 +184,8 @@ looking snippet.
   `Sundial` and gains pandas 2.2+.
 - TimeCopilot publishes **no per-model extras** — every model ships in its base
   install, which is why it is all-or-nothing behind our `foundation` extra.
+- The base install supports macOS x86_64, but the `foundation` extra does not:
+  TimeCopilot's dependency graph requires PyTorch >=2.4 and those releases have
+  no Intel macOS wheel. Optional integration is therefore verified on Linux CI.
 - The core depends on `statsforecast` and `utilsforecast` only; adding anything
   that pulls torch to the core defeats the point of the split.
