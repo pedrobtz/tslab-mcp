@@ -103,7 +103,8 @@ async def tsf_load_series(params: LoadSeriesInput) -> str:
     """Read a CSV or Parquet panel from disk and register it under a handle.
 
     Call this first; every other tool takes the handle it returns. The file must
-    be in Nixtla long format (unique_id, ds, y). Returns a compact JSON summary
+    be in Nixtla long format (unique_id, ds, y). Additional numeric columns are
+    retained as historical regressors. Returns a compact JSON summary
     -- series count, inferred frequency, date range, missing/off-grid timestamps,
     target integrity, and the SHA-256 of the source -- and nothing else: the data
     stays in the server so it never consumes your context.
@@ -289,6 +290,12 @@ async def tsf_cross_validate(params: CrossValidateInput) -> str:
             "cross_validation",
             models=names,
             backend=backend.name,
+            regressors=[
+                column
+                for column in series.df.columns
+                if column not in registry.REQUIRED_COLUMNS
+            ],
+            regressor_models=sorted(models.REGRESSOR_MODELS.intersection(names)),
             h=params.h,
             n_windows=params.n_windows,
             step_size=params.step_size,
@@ -353,6 +360,10 @@ async def tsf_forecast(params: ForecastInput) -> str:
     max_preview_rows to dump the frame into the conversation is the one thing
     that reliably ruins a long session.
 
+    If the history has regressor columns and a regressor-aware model such as
+    AutoARIMA is requested, pass future_regressors_path with the exact next h
+    values. The source and SHA-256 are recorded in the run manifest.
+
     LONG-RUNNING for foundation models.
     """
 
@@ -374,8 +385,33 @@ async def tsf_forecast(params: ForecastInput) -> str:
             with_intervals=bool(params.level),
         )
         backend = backends.select(names)
+        regressors = [
+            column
+            for column in series.df.columns
+            if column not in registry.REQUIRED_COLUMNS
+        ]
+        future_regressors = None
+        future_regressors_metadata = None
+        needs_future = bool(regressors and models.REGRESSOR_MODELS.intersection(names))
+        if needs_future and params.future_regressors_path is None:
+            regressor_models = sorted(models.REGRESSOR_MODELS.intersection(names))
+            raise ValueError(
+                f"Forecast model(s) {regressor_models} use the loaded regressors "
+                f"{regressors}. Pass future_regressors_path with exactly h={params.h} "
+                "future rows per series."
+            )
+        if params.future_regressors_path is not None:
+            future_regressors, future_regressors_metadata = (
+                registry.load_future_regressors(
+                    params.future_regressors_path, series, params.h
+                )
+            )
         forecast_df = backend.forecast(
-            df=series.df, h=params.h, freq=series.freq, level=params.level
+            df=series.df,
+            h=params.h,
+            freq=series.freq,
+            level=params.level,
+            future_regressors=future_regressors,
         )
         backends.validate_forecast_frame(forecast_df, names, params.level)
         path = artifacts.write_parquet(forecast_df, "fcst", series.handle)
@@ -390,6 +426,9 @@ async def tsf_forecast(params: ForecastInput) -> str:
             backend=backend.name,
             h=params.h,
             level=params.level,
+            regressors=regressors,
+            regressor_models=sorted(models.REGRESSOR_MODELS.intersection(names)),
+            future_regressors=future_regressors_metadata,
             prediction_intervals=backends.prediction_interval_configuration(
                 backend.name, names, params.h, params.level
             ),
@@ -480,6 +519,12 @@ async def tsf_detect_anomalies(params: DetectAnomaliesInput) -> str:
             "anomalies",
             model=params.model,
             backend=backend.name,
+            regressors=[
+                column
+                for column in series.df.columns
+                if column not in registry.REQUIRED_COLUMNS
+            ],
+            regressor_model=params.model in models.REGRESSOR_MODELS,
             h=params.h,
             n_windows=n_windows,
             n_windows_requested=params.n_windows,

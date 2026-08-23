@@ -79,6 +79,11 @@ def build(series: SeriesHandle, note: str | None = None) -> dict[str, Any]:
             "loaded_at": series.loaded_at,
             "n_series": series.n_series,
             "n_obs": series.n_obs,
+            "regressors": [
+                column
+                for column in series.df.columns
+                if column not in ("unique_id", "ds", "y")
+            ],
             "integrity": series.integrity,
         },
         "runs": series.runs,

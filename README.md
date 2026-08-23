@@ -306,6 +306,9 @@ anything else — that pause is expected, not a hang, and it only happens if the
 
 For a complete copy-paste chat walkthrough using the classic AirPassengers
 dataset, see [`examples/air-passengers-chat.md`](examples/air-passengers-chat.md).
+For a multivariate macroeconomic example, see
+[`examples/us-inflation-forecast-chat.md`](examples/us-inflation-forecast-chat.md),
+which compares inflation forecasts with and without four lagged FRED regressors.
 
 Start from a CSV in Nixtla long format:
 
@@ -315,6 +318,13 @@ branch_01,2018-01-01,1043.2
 branch_01,2018-02-01,1102.7
 ...
 ```
+
+Additional numeric columns are treated as historical regressors. Statistical
+`AutoARIMA` consumes them; the other statistical models ignore them and can
+serve as univariate benchmarks in the same cross-validation. Forecasting with
+`AutoARIMA` then requires `future_regressors_path`: a CSV or Parquet file with
+`unique_id`, `ds`, the identical regressor columns, and exactly `h` future rows
+per series. The forecast run records that file's path and SHA-256.
 
 **1. Load it.** The panel stays in the server process; the handle is all the
 session carries.

@@ -15,6 +15,7 @@ import json
 import typing
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -242,6 +243,7 @@ async def test_list_models_finds_the_statistical_family():
     )
     assert "SeasonalNaive" in payload["available"]
     assert "AutoETS" in payload["statistical"]
+    assert payload["regressor_models"] == ["AutoARIMA"]
     assert payload["n_available"] == 11
     assert payload["backend"] == "statsforecast"
 
@@ -328,6 +330,55 @@ async def test_forecast_preview_can_be_switched_off(loaded):
         )
     )
     assert payload["preview"] == []
+
+
+async def test_forecast_with_regressors_records_future_input_lineage(
+    tmp_path, seasonal_monthly
+):
+    history = seasonal_monthly.copy()
+    history["policy_rate_lag12"] = range(len(history))
+    history_path = tmp_path / "macro.csv"
+    history.to_csv(history_path, index=False)
+    registry.load_panel(str(history_path), handle="macro")
+
+    future_path = tmp_path / "macro-future.csv"
+    pd.DataFrame(
+        {
+            "unique_id": "clean",
+            "ds": pd.date_range("2024-01-01", periods=2, freq="MS"),
+            "policy_rate_lag12": [72.0, 73.0],
+        }
+    ).to_csv(future_path, index=False)
+
+    payload = json.loads(
+        await tsf_forecast(
+            ForecastInput(
+                handle="macro",
+                models=["AutoARIMA"],
+                h=2,
+                level=[],
+                future_regressors_path=str(future_path),
+            )
+        )
+    )
+
+    assert payload["regressors"] == ["policy_rate_lag12"]
+    assert payload["regressor_models"] == ["AutoARIMA"]
+    assert payload["future_regressors"]["source"] == str(future_path)
+    assert len(payload["future_regressors"]["sha256"]) == 64
+
+
+async def test_regressor_model_requires_future_values(tmp_path, seasonal_monthly):
+    history = seasonal_monthly.copy()
+    history["policy_rate_lag12"] = range(len(history))
+    history_path = tmp_path / "macro.csv"
+    history.to_csv(history_path, index=False)
+    registry.load_panel(str(history_path), handle="macro")
+
+    with pytest.raises(ValueError, match="future_regressors_path"):
+        await tsf_forecast(
+            ForecastInput(handle="macro", models=["AutoARIMA"], h=2, level=[])
+        )
 
 
 async def test_intermittent_forecast_records_conformal_intervals(

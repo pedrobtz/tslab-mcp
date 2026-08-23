@@ -160,6 +160,16 @@ def test_empty_level_list_is_allowed_for_point_forecasts():
     assert ForecastInput(handle="h", models=["AutoETS"], h=4, level=[]).level == []
 
 
+def test_future_regressors_path_is_optional_and_stripped():
+    params = ForecastInput(
+        handle="h",
+        models=["AutoARIMA"],
+        h=4,
+        future_regressors_path="  /tmp/future.csv  ",
+    )
+    assert params.future_regressors_path == "/tmp/future.csv"
+
+
 @pytest.mark.parametrize("value", [-1, 101])
 def test_preview_rows_are_bounded(value):
     with pytest.raises(ValidationError):

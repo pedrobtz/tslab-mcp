@@ -25,6 +25,28 @@ def test_every_statistical_model_forecasts_with_default_intervals(
             assert f"{name}-hi-{level}" in result
 
 
+def test_autoarima_forecasts_with_future_regressors(seasonal_monthly):
+    history = seasonal_monthly.copy()
+    history["known_input"] = range(len(history))
+    future = pd.DataFrame(
+        {
+            "unique_id": "clean",
+            "ds": pd.date_range("2024-01-01", periods=2, freq="MS"),
+            "known_input": [72.0, 73.0],
+        }
+    )
+
+    result = backends.StatsForecastBackend(["AutoARIMA"]).forecast(
+        history,
+        h=2,
+        freq="MS",
+        level=None,
+        future_regressors=future,
+    )
+
+    backends.validate_forecast_frame(result, ["AutoARIMA"], [])
+
+
 def test_every_statistical_model_cross_validates_under_its_public_name(
     seasonal_monthly,
 ):

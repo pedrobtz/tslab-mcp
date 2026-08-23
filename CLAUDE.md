@@ -168,6 +168,11 @@ looking snippet.
   off-grid timestamps, but every analytical tool calls `require_regular`.
   Never add automatic filling or imputation: that is an analytical decision
   the manifest cannot justify on the caller's behalf.
+- **Extra columns are regressors, not metadata.** Loading requires every extra
+  column to be numeric and finite. StatsForecast `AutoARIMA` consumes them;
+  univariate statistical models ignore them. An `AutoARIMA` forecast requires
+  an exact future-regressor frame, whose source and hash belong in the run
+  record. Never extrapolate those inputs inside the server.
 - **No non-finite backend output is a successful run.** Validate canonical
   point and interval columns before writing parquet or appending a run record.
 

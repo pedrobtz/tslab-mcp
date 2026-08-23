@@ -53,7 +53,12 @@ class Backend(Protocol):
     name: str
 
     def forecast(
-        self, df: pd.DataFrame, h: int, freq: str, level: list[int] | None
+        self,
+        df: pd.DataFrame,
+        h: int,
+        freq: str,
+        level: list[int] | None,
+        future_regressors: pd.DataFrame | None = None,
     ) -> pd.DataFrame: ...
 
     def cross_validation(
@@ -122,12 +127,17 @@ class StatsForecastBackend:
         return StatsForecast(models=instances, freq=freq)
 
     def forecast(
-        self, df: pd.DataFrame, h: int, freq: str, level: list[int] | None
+        self,
+        df: pd.DataFrame,
+        h: int,
+        freq: str,
+        level: list[int] | None,
+        future_regressors: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         out: pd.DataFrame = self._engine(
             freq, h=h, with_intervals=bool(level)
         ).forecast(
-            h=h, df=df, level=level or None
+            h=h, df=df, X_df=future_regressors, level=level or None
         )
         return out
 
@@ -190,8 +200,19 @@ class TimeCopilotBackend:
         return TimeCopilotForecaster(models=resolve_timecopilot(self.model_names))
 
     def forecast(
-        self, df: pd.DataFrame, h: int, freq: str, level: list[int] | None
+        self,
+        df: pd.DataFrame,
+        h: int,
+        freq: str,
+        level: list[int] | None,
+        future_regressors: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
+        if future_regressors is not None:
+            raise ValueError(
+                "Future regressors are currently supported only by the "
+                "statsforecast backend. Use statistical AutoARIMA or omit "
+                "foundation models."
+            )
         out: pd.DataFrame = self._forecaster().forecast(
             df=df, h=h, freq=freq, level=level or None
         )

@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "tslab": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${workspaceFolder}",
+        "tslab-mcp"
+      ],
+      "env": {
+        "TSLAB_MCP_HOME": "${userHome}/.tslab-mcp"
+      }
+    }
+  }
+}

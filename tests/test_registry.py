@@ -158,6 +158,84 @@ def test_rows_are_sorted_by_id_then_time(panel_path):
     assert pd.api.types.is_datetime64_any_dtype(df["ds"])
 
 
+def test_numeric_regressors_are_retained_and_reported(tmp_path, seasonal_monthly):
+    frame = seasonal_monthly.copy()
+    frame["policy_rate_lag12"] = range(len(frame))
+    path = tmp_path / "with-regressors.csv"
+    frame.to_csv(path, index=False)
+
+    series, _ = registry.load_panel(str(path), handle="macro")
+    summary = registry.summarize(series)
+
+    assert summary["regressor_columns"] == ["policy_rate_lag12"]
+    assert pd.api.types.is_numeric_dtype(series.df["policy_rate_lag12"])
+
+
+@pytest.mark.parametrize("bad_value", [None, "not-a-number", float("inf")])
+def test_invalid_historical_regressor_is_rejected(
+    tmp_path, seasonal_monthly, bad_value
+):
+    frame = seasonal_monthly.copy()
+    frame["policy_rate_lag12"] = 1.0
+    frame["policy_rate_lag12"] = frame["policy_rate_lag12"].astype(object)
+    frame.loc[0, "policy_rate_lag12"] = bad_value
+    path = tmp_path / "bad-regressor.csv"
+    frame.to_csv(path, index=False)
+
+    with pytest.raises(ValueError, match="Regressor column 'policy_rate_lag12'"):
+        registry.load_panel(str(path))
+
+
+def test_future_regressors_must_cover_exact_horizon(tmp_path, seasonal_monthly):
+    history = seasonal_monthly.copy()
+    history["policy_rate_lag12"] = range(len(history))
+    history_path = tmp_path / "history.csv"
+    history.to_csv(history_path, index=False)
+    series, _ = registry.load_panel(str(history_path), handle="macro")
+
+    future = pd.DataFrame(
+        {
+            "unique_id": "clean",
+            "ds": pd.date_range("2024-01-01", periods=2, freq="MS"),
+            "policy_rate_lag12": [1.0, 2.0],
+        }
+    )
+    future_path = tmp_path / "future.csv"
+    future.to_csv(future_path, index=False)
+
+    loaded, metadata = registry.load_future_regressors(
+        str(future_path), series, h=2
+    )
+    assert list(loaded.columns) == ["unique_id", "ds", "policy_rate_lag12"]
+    assert metadata["n_rows"] == 2
+    assert len(metadata["sha256"]) == 64
+
+    future.loc[1, "ds"] = "2024-03-01"
+    future.to_csv(future_path, index=False)
+    with pytest.raises(ValueError, match="exact forecast horizon"):
+        registry.load_future_regressors(str(future_path), series, h=2)
+
+
+def test_future_regressor_schema_must_match_history(tmp_path, seasonal_monthly):
+    history = seasonal_monthly.copy()
+    history["policy_rate_lag12"] = range(len(history))
+    history_path = tmp_path / "history.csv"
+    history.to_csv(history_path, index=False)
+    series, _ = registry.load_panel(str(history_path), handle="macro")
+
+    future_path = tmp_path / "future.csv"
+    pd.DataFrame(
+        {
+            "unique_id": ["clean"],
+            "ds": ["2024-01-01"],
+            "wrong_name": [1.0],
+        }
+    ).to_csv(future_path, index=False)
+
+    with pytest.raises(ValueError, match="Expected exactly"):
+        registry.load_future_regressors(str(future_path), series, h=1)
+
+
 def test_clear_empties_the_store(loaded):
     registry.clear()
     assert registry.handles() == []

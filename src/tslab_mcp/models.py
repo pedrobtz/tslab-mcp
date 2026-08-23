@@ -59,6 +59,12 @@ MODEL_REGISTRY: dict[str, str] = {
 STATISTICAL_MODELS = frozenset(STATS_MODELS)
 FOUNDATION_MODELS = frozenset(TIMECOPILOT_MODELS)
 
+#: Statistical models verified to consume numeric columns beyond
+#: ``unique_id, ds, y`` through StatsForecast's exogenous-regressor contract.
+#: The other statistical models safely ignore those columns, which lets a CV
+#: run compare dynamic regression with univariate benchmarks on one handle.
+REGRESSOR_MODELS = frozenset({"AutoARIMA"})
+
 #: Reaches an external API rather than running locally.
 REMOTE_MODELS = frozenset({"TimeGPT"})
 
@@ -208,6 +214,7 @@ def probe(family: str = "all", include_unavailable: bool = True) -> dict[str, An
         "n_available": len(available),
         "statistical": sorted(statistical),
         "foundation": sorted(foundation),
+        "regressor_models": sorted(REGRESSOR_MODELS & set(available)),
         "backend": "statsforecast",
         "foundation_extra_installed": timecopilot_available(),
         "notes": [
@@ -217,6 +224,8 @@ def probe(family: str = "all", include_unavailable: bool = True) -> dict[str, An
             "hundreds of MB on first call and are slow on CPU.",
             "TimeGPT calls the Nixtla API and needs NIXTLA_API_KEY; every "
             "other model runs locally.",
+            "AutoARIMA consumes additional numeric input columns as historical "
+            "regressors and needs matching future regressors when forecasting.",
         ],
     }
     if include_unavailable:

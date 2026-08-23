@@ -69,7 +69,8 @@ class LoadSeriesInput(_Base):
         ...,
         description=(
             "Absolute path to a local CSV or Parquet file in Nixtla long "
-            "format, with columns unique_id, ds, y. "
+            "format, with columns unique_id, ds, y. Additional columns are "
+            "treated as numeric historical regressors. "
             "Example: '/data/monthly_deposits.parquet'."
         ),
         min_length=1,
@@ -259,6 +260,17 @@ class ForecastInput(_Base):
         max_length=12,
     )
     h: int = Field(..., description="Forecast horizon in periods.", ge=1, le=5000)
+    future_regressors_path: str | None = Field(
+        default=None,
+        description=(
+            "Absolute path to a CSV or Parquet file containing unique_id, ds, "
+            "and the same regressor columns as the loaded history, with "
+            "exactly h future rows per series. Required when a regressor-aware "
+            "model such as AutoARIMA forecasts a series loaded with extra "
+            "columns. Example: '/data/inflation_future_regressors.csv'."
+        ),
+        min_length=1,
+    )
     level: list[int] = Field(
         default_factory=lambda: [80, 95],
         description=(

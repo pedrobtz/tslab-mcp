@@ -22,7 +22,8 @@ scope.
    `tsf_load_series`; if they supplied an existing handle, use it. Read the
    returned frequency, range, history length, and `integrity` result. Stop and
    explain the remediation if timestamps are irregular or required values are
-   invalid. Never silently fill, interpolate, aggregate, or impute data.
+   invalid. Treat additional numeric columns as historical regressors and note
+   them explicitly. Never silently fill, interpolate, aggregate, or impute data.
 
 2. **Analyze time-series features.** Call `tsf_describe_series` before choosing
    candidates. Connect trend, seasonality, variation, intermittency, and
@@ -62,9 +63,12 @@ scope.
 6. **Forecast with the selected model.** Call `tsf_forecast` only after the
    selection is justified, unless the user explicitly requested a fixed-model
    forecast without evaluation. Use the requested horizon and interval levels;
-   otherwise use the tool's 80% and 95% defaults. Interpret pattern and
-   uncertainty without presenting prediction intervals as guarantees. Return
-   the artifact path instead of copying a large frame into the conversation.
+   otherwise use the tool's 80% and 95% defaults. When a regressor-aware model
+   was selected, require the user-prepared future-regressor file rather than
+   inventing future inputs; pass it as `future_regressors_path`. Interpret
+   pattern and uncertainty without presenting prediction intervals as
+   guarantees. Return the artifact path instead of copying a large frame into
+   the conversation.
 
 7. **Check historical anomalies for a complete analysis.** For an end-to-end
    analysis, call `tsf_detect_anomalies` with the same selected model. Pass a

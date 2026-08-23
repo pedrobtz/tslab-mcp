@@ -20,6 +20,7 @@ from .artifacts import sha256_file
 
 #: The Nixtla long-format contract every tool assumes.
 REQUIRED_COLUMNS = ("unique_id", "ds", "y")
+FUTURE_REQUIRED_COLUMNS = ("unique_id", "ds")
 
 _PARQUET_SUFFIXES = frozenset({".parquet", ".pq"})
 _CSV_SUFFIXES = frozenset({".csv", ".txt", ".tsv"})
@@ -144,8 +145,31 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
             "target values."
         )
     df["y"] = numeric_y
+    _coerce_numeric_columns(
+        df,
+        [column for column in df.columns if column not in REQUIRED_COLUMNS],
+        label="Regressor",
+    )
     ordered: pd.DataFrame = df.sort_values(["unique_id", "ds"]).reset_index(drop=True)
     return ordered
+
+
+def _coerce_numeric_columns(
+    df: pd.DataFrame, columns: list[str], *, label: str
+) -> None:
+    """Coerce model inputs in place and reject missing/non-finite values."""
+    for column in columns:
+        numeric = pd.to_numeric(df[column], errors="coerce")
+        invalid = numeric.isna() | numeric.isin([float("inf"), float("-inf")])
+        if invalid.any():
+            examples = df.loc[invalid, column].head(5).tolist()
+            raise ValueError(
+                f"{label} column '{column}' contains {int(invalid.sum())} "
+                "missing, non-numeric, or non-finite value(s), for example "
+                f"{examples}. Clean or impute regressors explicitly before "
+                "loading; this server never invents model inputs."
+            )
+        df[column] = numeric
 
 
 def _check_duplicates(df: pd.DataFrame) -> None:
@@ -305,6 +329,119 @@ def load_panel(
     return series, replaced
 
 
+def load_future_regressors(
+    path_str: str, series: SeriesHandle, h: int
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Load and validate the known future values needed by dynamic regression.
+
+    The future frame must match the historical regressor schema and contain the
+    exact next ``h`` timestamps for every series. Requiring an explicit file
+    keeps assumptions about future inputs outside the forecasting server.
+    """
+    path = Path(path_str).expanduser()
+    if not path.exists():
+        raise ValueError(
+            f"No such future regressors file: {path}. Pass an absolute path to "
+            "a local .csv or .parquet file."
+        )
+    if path.is_dir():
+        raise ValueError(
+            f"{path} is a directory. Pass one future regressors CSV or Parquet file."
+        )
+
+    regressors = [c for c in series.df.columns if c not in REQUIRED_COLUMNS]
+    if not regressors:
+        raise ValueError(
+            f"Panel '{series.handle}' has no historical regressor columns, so "
+            "future_regressors_path must be omitted."
+        )
+
+    frame = _read_frame(path)
+    expected_columns = [*FUTURE_REQUIRED_COLUMNS, *regressors]
+    missing = [column for column in expected_columns if column not in frame.columns]
+    unexpected = [column for column in frame.columns if column not in expected_columns]
+    if missing or unexpected:
+        raise ValueError(
+            f"Future regressors columns do not match panel '{series.handle}'. "
+            f"Expected exactly {expected_columns}; missing {missing}; unexpected "
+            f"{unexpected}."
+        )
+    if frame.empty:
+        raise ValueError(f"{path.name} has the right columns but no rows.")
+
+    frame = frame.copy()
+    missing_ids = frame["unique_id"].isna()
+    if missing_ids.any():
+        raise ValueError(
+            "Future regressors column 'unique_id' contains "
+            f"{int(missing_ids.sum())} missing value(s)."
+        )
+    frame["unique_id"] = frame["unique_id"].astype(str)
+    blank_ids = frame["unique_id"].str.strip().eq("")
+    if blank_ids.any():
+        raise ValueError(
+            "Future regressors column 'unique_id' contains "
+            f"{int(blank_ids.sum())} blank value(s)."
+        )
+    try:
+        frame["ds"] = pd.to_datetime(frame["ds"])
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"Future regressors column 'ds' could not be parsed ({exc}). Use "
+            "ISO-8601 dates."
+        ) from None
+    if frame["ds"].isna().any():
+        raise ValueError(
+            "Future regressors column 'ds' contains missing or invalid timestamps."
+        )
+    _coerce_numeric_columns(frame, regressors, label="Future regressor")
+    _check_duplicates(frame)
+
+    historical_ids = set(series.df["unique_id"].unique())
+    future_ids = set(frame["unique_id"].unique())
+    if historical_ids != future_ids:
+        missing_ids_set = sorted(historical_ids - future_ids)
+        unexpected_ids = sorted(future_ids - historical_ids)
+        raise ValueError(
+            "Future regressors series IDs do not match the loaded panel. "
+            f"Missing IDs: {missing_ids_set}; unexpected IDs: {unexpected_ids}."
+        )
+
+    offset = pd.tseries.frequencies.to_offset(series.freq)
+    assert offset is not None  # the series frequency was validated on load
+    date_errors: list[str] = []
+    for uid in sorted(historical_ids):
+        history = series.df.loc[series.df["unique_id"] == uid, "ds"]
+        observed = pd.DatetimeIndex(
+            frame.loc[frame["unique_id"] == uid, "ds"].sort_values()
+        )
+        expected = pd.date_range(history.max() + offset, periods=h, freq=offset)
+        if observed.equals(expected):
+            continue
+        date_errors.append(
+            f"{uid}: expected {h} dates from {expected[0].date()} through "
+            f"{expected[-1].date()}, found {len(observed)} from "
+            f"{observed.min().date() if len(observed) else 'none'} through "
+            f"{observed.max().date() if len(observed) else 'none'}"
+        )
+    if date_errors:
+        raise ValueError(
+            "Future regressors do not cover the exact forecast horizon. "
+            + "; ".join(date_errors[:5])
+        )
+
+    ordered = frame.sort_values(["unique_id", "ds"]).reset_index(drop=True)
+    metadata = {
+        "source": str(path.resolve()),
+        "sha256": sha256_file(path),
+        "columns": regressors,
+        "n_rows": len(ordered),
+        "start": ordered["ds"].min().isoformat(),
+        "end": ordered["ds"].max().isoformat(),
+    }
+    return ordered, metadata
+
+
 def summarize(series: SeriesHandle, replaced: bool = False) -> dict[str, Any]:
     """Compact JSON-safe description of a loaded panel."""
     df = series.df
@@ -325,6 +462,7 @@ def summarize(series: SeriesHandle, replaced: bool = False) -> dict[str, Any]:
         },
         "n_missing_y": int(df["y"].isna().sum()),
         "integrity": series.integrity,
+        "regressor_columns": [c for c in df.columns if c not in REQUIRED_COLUMNS],
         "extra_columns": [c for c in df.columns if c not in REQUIRED_COLUMNS],
         "loaded_at": series.loaded_at,
         "replaced_existing_handle": replaced,
